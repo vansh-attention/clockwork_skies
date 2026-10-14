@@ -1,0 +1,35 @@
+{
+  "name": "clockwork-skies",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "predev": "npm run build:packages",
+    "dev": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/concurrently.js -k -n server,client -c yellow,cyan \"npm run dev -w @clockwork/server\" \"npm run dev -w @clockwork/client\"",
+    "build": "npm run build:packages && npm run build -w @clockwork/server && npm run build -w @clockwork/client",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tools/tsconfig.json && tsc -p tests/browser/tsconfig.json",
+    "test": "npm run test --workspaces --if-present && npm run test:tools",
+    "simulate": "tsx tools/simulate-match.ts",
+    "invite": "node --env-file-if-exists=.env --import tsx tools/generate-invite.ts",
+    "validate:content": "tsx tools/validate-content.ts",
+    "build:packages": "npm run build -w @clockwork/shared && npm run build -w @clockwork/content && npm run build -w @clockwork/render",
+    "pretest": "npm run build:packages",
+    "test:tools": "tsx --test tools/*.test.ts",
+    "pretypecheck": "npm run build:packages",
+    "verify": "npm run typecheck && npm test && npm run build && npm run validate:content && npm run simulate -- --matches=10",
+    "test:e2e": "playwright test"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "concurrently": "9.2.5",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}

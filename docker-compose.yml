@@ -1,0 +1,30 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 2567
+      CLIENT_ORIGIN: http://localhost:5173
+      INVITE_SECRET: local-development-secret-change-me
+      MATCH_START_DELAY_SECONDS: 8
+    ports:
+      - "2567:2567"
+  client:
+    image: node:24-alpine
+    working_dir: /workspace
+    command: sh -c "npm ci && npm run build:packages && npm run dev -w @clockwork/client -- --host 0.0.0.0"
+    volumes:
+      - .:/workspace
+      - client_modules:/workspace/node_modules
+    environment:
+      VITE_SERVER_URL: http://localhost:2567
+    ports:
+      - "5173:5173"
+    depends_on:
+      - server
+
+volumes:
+  client_modules:
