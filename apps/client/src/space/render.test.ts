@@ -53,6 +53,11 @@ function fakeSceneHost(failCompile = false) {
     compile: vi.fn(() => { if (failCompile) throw new Error("shader fault"); }),
     render: vi.fn(), dispose: vi.fn(), forceContextLoss: vi.fn(),
     renderLists: { dispose: vi.fn() },
+    getContext: vi.fn(() => ({
+      getExtension: vi.fn(() => ({ UNMASKED_RENDERER_WEBGL: 1 })),
+      getParameter: vi.fn(() => "Mock GPU"),
+    })),
+    getDrawingBufferSize: vi.fn((target: { set(x: number, y: number): unknown }) => target.set(1920, 1080)),
   };
   return { canvas, mount, observer, renderer, options: {
     rendererFactory: () => renderer as unknown as WebGLRenderer,
@@ -79,6 +84,33 @@ it("keeps one canvas and reuses geometry while resizing low and medium views", (
   scene.dispose(); scene.dispose();
   expect(host.observer.disconnect).toHaveBeenCalledTimes(1);
   expect(host.renderer.dispose).toHaveBeenCalledTimes(1);
+  expect(host.canvas.remove).toHaveBeenCalledTimes(1);
+});
+
+it("reports renderer counters and native drawing-buffer diagnostics", () => {
+  const host = fakeSceneHost();
+  const scene = new SpaceScene(host.mount, host.options);
+  const session = new SpaceSession(); session.reset("training");
+  scene.update(session, 1);
+  host.renderer.info.render.calls = 18;
+  host.renderer.info.render.triangles = 250;
+  scene.update(session, 1);
+  host.renderer.info.render.calls = 4;
+  const diagnostics = scene.diagnostics();
+  expect(diagnostics).toMatchObject({ renderer: "Mock GPU", calls: 4, triangles: 250,
+    maxCalls: 18, maxTriangles: 250, width: 1920, height: 1080,
+    geometries: 3, textures: 0, resourceCount: scene.resources.size });
+  scene.dispose();
+});
+
+it("releases the scene after a draw failure", () => {
+  const host = fakeSceneHost();
+  const scene = new SpaceScene(host.mount, host.options);
+  host.renderer.render.mockImplementationOnce(() => { throw new Error("draw fault"); });
+  const session = new SpaceSession(); session.reset("training");
+  expect(() => scene.update(session, 1)).toThrow("draw fault");
+  expect(scene.resources.size).toBe(0);
+  expect(host.observer.disconnect).toHaveBeenCalledTimes(1);
   expect(host.canvas.remove).toHaveBeenCalledTimes(1);
 });
 
