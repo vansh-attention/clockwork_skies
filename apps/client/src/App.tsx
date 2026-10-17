@@ -9,6 +9,8 @@ import { InputController } from "./InputController";
 import { GameConnection } from "./network";
 import { LocalPredictor } from "./prediction";
 
+export function isLegacyRoute(_search: string): boolean { return false; }
+
 type Profile = { callsign: string; paint: string; inviteCode: string };
 const initialHud: HudState = { phase: "lobby", alive: 0, hull: 100, shield: 0, boost: 100, heat: 0, rockets: 2, speed: 0, altitude: 0, stormDistance: -1, status: "lobby", kills: 0, target: null };
 function loadProfile(): Profile {
@@ -25,7 +27,7 @@ function loadReducedMotion() {
   catch { return false; }
 }
 
-export function App() {
+export function App(_route?: { search?: string }) {
   const connection = useMemo(() => new GameConnection(), []);
   const audio = useMemo(() => new AudioDirector(), []);
   const predictor = useMemo(() => new LocalPredictor(), []);
