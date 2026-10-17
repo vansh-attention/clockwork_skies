@@ -263,8 +263,11 @@ export class SpaceScene {
   private updater!: SectorUpdater;
   private observer: ResizeObserver | null = null;
   private readonly point = new T.Vector3();
+  private readonly buffer = new T.Vector2();
   private quality: "medium" | "low" = "medium";
   private disposed = false;
+  maxCalls = 0;
+  maxTriangles = 0;
 
   constructor(private readonly mount: HTMLElement, options: SceneOptions = {}) {
     let renderer: T.WebGLRenderer | undefined;
@@ -344,7 +347,28 @@ export class SpaceScene {
     this.marker.behind = this.point.z >= 0;
     this.point.applyMatrix4(camera.projectionMatrix);
     fitIndicator(this.point.x, this.point.y, this.marker.behind, this.marker);
-    this.renderer.render(world, camera);
+    try {
+      this.renderer.render(world, camera);
+    } catch (error) {
+      this.dispose();
+      throw error;
+    }
+    this.maxCalls = Math.max(this.maxCalls, this.renderer.info.render.calls);
+    this.maxTriangles = Math.max(this.maxTriangles, this.renderer.info.render.triangles);
+  }
+
+  diagnostics() {
+    const gl = this.renderer.getContext();
+    const extension = gl.getExtension("WEBGL_debug_renderer_info");
+    const renderer = extension ? String(gl.getParameter(extension.UNMASKED_RENDERER_WEBGL)) : "unavailable";
+    this.renderer.getDrawingBufferSize(this.buffer);
+    return { renderer, calls: this.renderer.info.render.calls,
+      triangles: this.renderer.info.render.triangles,
+      maxCalls: this.maxCalls, maxTriangles: this.maxTriangles,
+      geometries: this.renderer.info.memory.geometries,
+      textures: this.renderer.info.memory.textures,
+      resourceCount: this.resources.size,
+      width: this.buffer.x, height: this.buffer.y };
   }
 
   dispose(): void {
