@@ -1,5 +1,13 @@
 import { RULES } from "./types";
 
+export class FrameDriver {
+  running = false;
+  constructor(_frame: (rawSeconds: number) => void, _request: (callback: FrameRequestCallback) => number,
+    _cancel: (handle: number) => void, _now: () => number) {}
+  resume(): number { return 0; }
+  stop(): void {}
+}
+
 export class FixedClock {
   private accumulated = 0;
   dropped = 0;
