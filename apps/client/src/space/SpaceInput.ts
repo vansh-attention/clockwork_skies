@@ -108,7 +108,11 @@ export class SpaceInput {
     return c;
   }
   reset(): void { this.keys.clear(); this.queue.length = 0; this.head = 0; this.fire = this.rocket = false; }
-  cancelPendingCapture(): void { this.granted = false; this.cancelCapture?.(); }
+  cancelPendingCapture(): void {
+    this.granted = false;
+    this.capturing = false;
+    this.cancelCapture?.();
+  }
   release(): void { this.granted = false; this.reset(); if (document.pointerLockElement === this.canvas) document.exitPointerLock(); }
   dispose(): void {
     this.cancelCapture?.(); this.release(); window.removeEventListener("keydown", this.down); window.removeEventListener("keyup", this.up);
