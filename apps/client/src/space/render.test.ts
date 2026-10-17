@@ -3,6 +3,7 @@ import { Matrix4, Vector3 } from "three";
 import { Resources, SectorUpdater, buildSector } from "./SpaceScene";
 import { ROCKS, STATIONS } from "./map";
 import { SpaceSession } from "./SpaceSession";
+import { neutral, type Obstacle } from "./types";
 
 it("disposes each shared resource exactly once", () => {
   const resources = new Resources();
@@ -18,6 +19,31 @@ it("disposes each shared resource exactly once", () => {
   expect(geometry.dispose).toHaveBeenCalledTimes(1);
   expect(material.dispose).toHaveBeenCalledTimes(1);
   expect(resources.size).toBe(0);
+});
+
+it("pools rocket and occluded cannon feedback without drawing through a wall", () => {
+  const resources = new Resources(), sector = buildSector(resources);
+  const updater = new SectorUpdater(sector), session = new SpaceSession();
+  session.reset("training");
+  const wall: Obstacle = { id: "wall", kind: "box", center: [0, 0, 610], half: [8, 8, 1] };
+  session.combat.weapon(session.player, { ...neutral(), fire: true }, 1 / 60, 1,
+    [session.player], [wall], () => {});
+  const trace = session.combat.traces.find((item) => item.active)!;
+  expect(trace.b.z).toBeGreaterThan(609);
+  const rocket = session.combat.rockets[0]!;
+  rocket.active = true; rocket.p.set(10, 0, 600); rocket.prev.copy(rocket.p); rocket.v.set(0, 0, -140);
+  const geometry = sector.traces.geometry, rocketGeometry = sector.rockets.geometry;
+  for (let i = 0; i < 10; i++) updater.updateEffects(session, 1);
+  expect(sector.tracePositions.length).toBe(24 * 6);
+  expect(sector.tracePositions[5]).toBeCloseTo(trace.b.z);
+  expect(sector.rockets.count).toBe(8);
+  expect(sector.traces.geometry).toBe(geometry);
+  expect(sector.rockets.geometry).toBe(rocketGeometry);
+  session.combat.reset(); updater.updateEffects(session, 1);
+  expect(sector.tracePositions[5]).toBe(0);
+  const matrix = new Matrix4(); sector.rockets.getMatrixAt(0, matrix);
+  expect(new Vector3().setFromMatrixScale(matrix).length()).toBe(0);
+  resources.dispose();
 });
 
 it("reuses fixed gate, pickup and drone batches across resets", () => {
