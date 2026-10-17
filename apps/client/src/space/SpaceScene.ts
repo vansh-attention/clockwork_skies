@@ -106,6 +106,21 @@ export function buildSector(resources: Resources) {
     drones.frustumCulled = false;
     world.add(drones);
 
+    const rockets = new T.InstancedMesh(
+      resources.own(new T.ConeGeometry(0.4, 2, 5).rotateX(-Math.PI / 2)),
+      resources.own(new T.MeshBasicMaterial({ color: 0xefca70 })), 8);
+    for (let i = 0; i < rockets.count; i++) rockets.setMatrixAt(i, pose.matrix);
+    rockets.frustumCulled = false;
+    world.add(rockets);
+
+    const traceGeometry = resources.own(new T.BufferGeometry());
+    const tracePositions = new Float32Array(24 * 6);
+    traceGeometry.setAttribute("position", new T.BufferAttribute(tracePositions, 3));
+    const traces = new T.LineSegments(traceGeometry,
+      resources.own(new T.LineBasicMaterial({ color: 0xffdb85 })));
+    traces.frustumCulled = false;
+    world.add(traces);
+
     const rng = new SeededRandom(451);
     const positions = new Float32Array(600 * 3);
     for (let i = 0; i < 600; i++) {
@@ -123,7 +138,8 @@ export function buildSector(resources: Resources) {
     stars.frustumCulled = false;
     stars.renderOrder = -1;
     world.add(stars);
-    return { world, camera, station, rocks, gates, pickups, drones, stars };
+    return { world, camera, station, rocks, gates, pickups, drones, rockets,
+      stars, traces, tracePositions };
   } catch (error) {
     resources.dispose();
     throw error;
@@ -135,6 +151,8 @@ export function buildSector(resources: Resources) {
 export class SectorUpdater {
   private readonly pose = new T.Object3D();
   private readonly colour = new T.Color();
+  private readonly velocity = new T.Vector3();
+  private readonly forward = new T.Vector3(0, 0, -1);
 
   constructor(private readonly sector: ReturnType<typeof buildSector>) {}
 
@@ -171,5 +189,33 @@ export class SectorUpdater {
       pickups.setMatrixAt(i, pose.matrix);
     }
     pickups.instanceMatrix.needsUpdate = true;
+  }
+
+  updateEffects(session: SpaceSession, alpha: number): void {
+    const { rockets, traces, tracePositions } = this.sector;
+    const pose = this.pose;
+    const blend = Math.max(0, Math.min(1, alpha));
+    for (let i = 0; i < rockets.count; i++) {
+      const rocket = session.combat.rockets[i]!;
+      pose.position.lerpVectors(rocket.prev, rocket.p, blend);
+      if (rocket.active && rocket.v.lengthSq() > 0) {
+        pose.quaternion.setFromUnitVectors(this.forward, this.velocity.copy(rocket.v).normalize());
+      } else pose.quaternion.identity();
+      pose.scale.setScalar(rocket.active ? 1 : 0);
+      pose.updateMatrix();
+      rockets.setMatrixAt(i, pose.matrix);
+    }
+    rockets.instanceMatrix.needsUpdate = true;
+    for (let i = 0; i < session.combat.traces.length; i++) {
+      const trace = session.combat.traces[i]!;
+      const j = i * 6;
+      tracePositions[j] = trace.active ? trace.a.x : 0;
+      tracePositions[j + 1] = trace.active ? trace.a.y : 0;
+      tracePositions[j + 2] = trace.active ? trace.a.z : 0;
+      tracePositions[j + 3] = trace.active ? trace.b.x : 0;
+      tracePositions[j + 4] = trace.active ? trace.b.y : 0;
+      tracePositions[j + 5] = trace.active ? trace.b.z : 0;
+    }
+    (traces.geometry.getAttribute("position") as T.BufferAttribute).needsUpdate = true;
   }
 }
