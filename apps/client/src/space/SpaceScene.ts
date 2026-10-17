@@ -1,7 +1,8 @@
 import * as T from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { SeededRandom } from "@clockwork/shared";
-import { ROCKS, STATIONS } from "./map";
+import { GATES, PICKUPS, ROCKS, STATIONS } from "./map";
+import type { SpaceSession } from "./SpaceSession";
 
 export class Resources {
   private readonly values = new Set<{ dispose(): void }>();
@@ -68,6 +69,43 @@ export function buildSector(resources: Resources) {
     rocks.name = "Asteroid clusters";
     world.add(rocks);
 
+    const gates = new T.InstancedMesh(
+      resources.own(new T.TorusGeometry(22, 0.8, 5, 32)),
+      resources.own(new T.MeshBasicMaterial({ color: 0xffffff })), GATES.length);
+    const colour = new T.Color();
+    pose.rotation.set(0, 0, 0);
+    pose.scale.setScalar(1);
+    GATES.forEach((gate, i) => {
+      pose.position.set(...gate);
+      pose.updateMatrix();
+      gates.setMatrixAt(i, pose.matrix);
+      gates.setColorAt(i, colour.set(0x7ed9e8));
+    });
+    gates.computeBoundingSphere();
+    world.add(gates);
+
+    const pickups = new T.InstancedMesh(
+      resources.own(new T.OctahedronGeometry(4)),
+      resources.own(new T.MeshBasicMaterial({ color: 0xffffff })), PICKUPS.length);
+    PICKUPS.forEach((pickup, i) => {
+      pose.position.set(...pickup.at);
+      pose.updateMatrix();
+      pickups.setMatrixAt(i, pose.matrix);
+      pickups.setColorAt(i, colour.set(pickup.kind === "repair" ? 0xef786b :
+        pickup.kind === "energy" ? 0x7ed9e8 : 0xefca70));
+    });
+    pickups.computeBoundingSphere();
+    world.add(pickups);
+
+    const drones = new T.InstancedMesh(
+      resources.own(bake(new T.ConeGeometry(1.5, 5, 5).rotateX(-Math.PI / 2), 0xf1d0a5)),
+      material, 6);
+    pose.scale.setScalar(0);
+    pose.updateMatrix();
+    for (let i = 0; i < drones.count; i++) drones.setMatrixAt(i, pose.matrix);
+    drones.frustumCulled = false;
+    world.add(drones);
+
     const rng = new SeededRandom(451);
     const positions = new Float32Array(600 * 3);
     for (let i = 0; i < 600; i++) {
@@ -85,11 +123,53 @@ export function buildSector(resources: Resources) {
     stars.frustumCulled = false;
     stars.renderOrder = -1;
     world.add(stars);
-    return { world, camera, station, rocks, stars };
+    return { world, camera, station, rocks, gates, pickups, drones, stars };
   } catch (error) {
     resources.dispose();
     throw error;
   } finally {
     for (const geometry of temporary) geometry.dispose();
+  }
+}
+
+export class SectorUpdater {
+  private readonly pose = new T.Object3D();
+  private readonly colour = new T.Color();
+
+  constructor(private readonly sector: ReturnType<typeof buildSector>) {}
+
+  updateActors(session: SpaceSession, alpha: number): void {
+    const { drones, gates, pickups } = this.sector;
+    const pose = this.pose;
+    const blend = Math.max(0, Math.min(1, alpha));
+    for (let i = 0; i < drones.count; i++) {
+      const ship = session.drones[i]!;
+      pose.position.lerpVectors(ship.prevP, ship.p, blend);
+      pose.quaternion.slerpQuaternions(ship.prevQ, ship.q, blend);
+      pose.scale.setScalar(ship.hull > 0 ? 1 : 0);
+      pose.updateMatrix();
+      drones.setMatrixAt(i, pose.matrix);
+    }
+    drones.instanceMatrix.needsUpdate = true;
+
+    pose.quaternion.identity();
+    for (let i = 0; i < gates.count; i++) {
+      pose.position.set(...GATES[i]!);
+      pose.scale.setScalar(session.mode === "training" ? 1 : 0);
+      pose.updateMatrix();
+      gates.setMatrixAt(i, pose.matrix);
+      gates.setColorAt(i, this.colour.set(i === session.gate ? 0x7ed9e8 :
+        i < session.gate ? 0x3c555c : 0x455666));
+    }
+    gates.instanceMatrix.needsUpdate = true;
+    if (gates.instanceColor) gates.instanceColor.needsUpdate = true;
+
+    for (let i = 0; i < pickups.count; i++) {
+      pose.position.set(...PICKUPS[i]!.at);
+      pose.scale.setScalar(session.pickupAt[i]! <= session.time ? 1 : 0);
+      pose.updateMatrix();
+      pickups.setMatrixAt(i, pose.matrix);
+    }
+    pickups.instanceMatrix.needsUpdate = true;
   }
 }

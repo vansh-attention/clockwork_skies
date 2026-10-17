@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { Matrix4, Quaternion, Vector3 } from "three";
+import { Matrix4, Vector3 } from "three";
 import { Resources, SectorUpdater, buildSector } from "./SpaceScene";
 import { ROCKS, STATIONS } from "./map";
 import { SpaceSession } from "./SpaceSession";
@@ -31,19 +31,19 @@ it("reuses fixed gate, pickup and drone batches across resets", () => {
 
   session.reset("training");
   updater.updateActors(session, 1);
-  const matrix = new Matrix4(), position = new Vector3(), attitude = new Quaternion(), scale = new Vector3();
+  const matrix = new Matrix4(), scale = new Vector3();
   sector.drones.getMatrixAt(5, matrix);
-  matrix.decompose(position, attitude, scale);
+  scale.setFromMatrixScale(matrix);
   expect(scale.length()).toBe(0);
   expect(sector.gates.instanceColor?.getX(0)).toBeGreaterThan(0);
 
   session.reset("skirmish", 6);
   updater.updateActors(session, 1);
   sector.drones.getMatrixAt(5, matrix);
-  matrix.decompose(position, attitude, scale);
+  scale.setFromMatrixScale(matrix);
   expect(scale.x).toBeCloseTo(1);
   sector.gates.getMatrixAt(0, matrix);
-  matrix.decompose(position, attitude, scale);
+  scale.setFromMatrixScale(matrix);
   expect(scale.length()).toBe(0);
   expect([sector.gates.geometry, sector.pickups.geometry, sector.drones.geometry]).toEqual(geometries);
   expect(resources.size).toBe(initialResourceCount);
