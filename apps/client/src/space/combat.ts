@@ -17,7 +17,7 @@ export class Combat {
   reset(): void { for (const trace of this.traces) trace.active = false; for (const rocket of this.rockets) rocket.active = false; this.traceCursor = 0; }
   select(shooter: Ship, ships: readonly Ship[], obstacles: readonly Obstacle[]): Ship | null {
     eyeOf(shooter, origin); forwardOf(shooter, direction);
-    let selected: Ship | null = null, best = RULES.rocketRange;
+    let selected: Ship | null = null, best: number = RULES.rocketRange;
     for (const target of ships) {
       if (target.team === shooter.team || target.hull <= 0) continue;
       segment.subVectors(target.p, origin); const distance = segment.length();
