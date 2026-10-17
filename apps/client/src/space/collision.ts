@@ -57,3 +57,24 @@ export function firstHit(a: Vector3, d: Vector3, radius: number,
   }
   return hit;
 }
+
+const movement = new Vector3();
+const slide = new Vector3();
+export function moveWithCollisions(s: Ship, obstacles: readonly Obstacle[], now: number): void {
+  movement.subVectors(s.p, s.prevP);
+  const hit = firstHit(s.prevP, movement, RULES.radius, obstacles);
+  if (!hit) return;
+  s.p.copy(s.prevP).addScaledVector(movement, Math.max(0, hit.t - 0.001)).addScaledVector(hit.normal, 0.12);
+  const normalSpeed = Math.max(0, -s.v.dot(hit.normal));
+  if (now - s.impactAt >= 0.35 && normalSpeed > 8) {
+    s.hull = Math.max(0, s.hull - Math.min(40, normalSpeed * 0.45));
+    s.impactAt = now;
+  }
+  if (s.v.dot(hit.normal) < 0) s.v.addScaledVector(hit.normal, -s.v.dot(hit.normal));
+  slide.copy(movement).multiplyScalar(1 - hit.t);
+  if (slide.dot(hit.normal) < 0) slide.addScaledVector(hit.normal, -slide.dot(hit.normal));
+  if (slide.lengthSq() < 1e-12) return;
+  const second = firstHit(s.p, slide, RULES.radius, obstacles);
+  s.p.addScaledVector(slide, second ? Math.max(0, second.t - 0.001) : 1);
+  if (second && s.v.dot(second.normal) < 0) s.v.addScaledVector(second.normal, -s.v.dot(second.normal));
+}
