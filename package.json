@@ -10,6 +10,8 @@
   "scripts": {
     "predev": "npm run build:packages",
     "dev": "node --env-file-if-exists=.env node_modules/concurrently/dist/bin/concurrently.js -k -n server,client -c yellow,cyan \"npm run dev -w @clockwork/server\" \"npm run dev -w @clockwork/client\"",
+    "predev:space": "npm run build:packages",
+    "dev:space": "npm run dev -w @clockwork/client -- --host 127.0.0.1 --strictPort",
     "build": "npm run build:packages && npm run build -w @clockwork/server && npm run build -w @clockwork/client",
     "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tools/tsconfig.json && tsc -p tests/browser/tsconfig.json",
     "test": "npm run test --workspaces --if-present && npm run test:tools",
