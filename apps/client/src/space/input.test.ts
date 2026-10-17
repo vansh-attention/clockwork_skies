@@ -55,3 +55,18 @@ it("ignores DOM controls, supports keyboard flight, and starts no interval", () 
   expect(w.setInterval).not.toHaveBeenCalled();
   input.dispose();
 });
+
+it("rejects a late pointer lock while a pending capture is being cancelled", async () => {
+  const { w, doc, canvas, input } = fixture();
+  doc.pointerLockElement = null;
+  Object.assign(w, { setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });
+  Object.assign(canvas, { requestPointerLock: () => new Promise<void>(() => {}) });
+  const capture = input.capture();
+  const rejected = expect(capture).rejects.toThrow("Mouse capture failed");
+  input.cancelPendingCapture();
+  doc.pointerLockElement = canvas;
+  doc.dispatchEvent(new Event("pointerlockchange"));
+  await rejected;
+  expect(doc.exitPointerLock).toHaveBeenCalledTimes(1);
+  input.dispose();
+});
