@@ -1,9 +1,10 @@
 import { expect, it, vi } from "vitest";
-import { Matrix4, Vector3 } from "three";
-import { Resources, SectorUpdater, buildSector } from "./SpaceScene";
+import { Matrix4, PerspectiveCamera, Vector3, type WebGLRenderer } from "three";
+import { Resources, SectorUpdater, SpaceScene, buildSector, fitIndicator, updateCockpitCamera } from "./SpaceScene";
 import { ROCKS, STATIONS } from "./map";
 import { SpaceSession } from "./SpaceSession";
 import { neutral, type Obstacle } from "./types";
+import { createShip, eyeOf, forwardOf } from "./flight";
 
 it("disposes each shared resource exactly once", () => {
   const resources = new Resources();
@@ -19,6 +20,79 @@ it("disposes each shared resource exactly once", () => {
   expect(geometry.dispose).toHaveBeenCalledTimes(1);
   expect(material.dispose).toHaveBeenCalledTimes(1);
   expect(resources.size).toBe(0);
+});
+
+it("aligns first-person attitude and eye with the weapon under pitch and roll", () => {
+  const ship = createShip("player");
+  ship.q.setFromAxisAngle(new Vector3(1, 1, 1).normalize(), 1.1);
+  const camera = new PerspectiveCamera(75);
+  updateCockpitCamera(camera, ship);
+  expect(camera.getWorldDirection(new Vector3()).dot(forwardOf(ship, new Vector3()))).toBeCloseTo(1);
+  expect(camera.position.distanceTo(eyeOf(ship, new Vector3()))).toBeCloseTo(0);
+});
+
+it("fits behind and invalid objective markers to finite screen edges", () => {
+  const marker = { x: 0, y: 0, bearing: 0, offscreen: false };
+  fitIndicator(0, 0, true, marker);
+  expect(marker.offscreen).toBe(true);
+  expect(marker.x === 10 || marker.x === 90 || marker.y === 17.5 || marker.y === 82.5).toBe(true);
+  fitIndicator(Infinity, NaN, false, marker);
+  expect([marker.x, marker.y, marker.bearing].every(Number.isFinite)).toBe(true);
+});
+
+function fakeSceneHost(failCompile = false) {
+  const canvas = { style: {} as Record<string, string>, tabIndex: -1,
+    setAttribute: vi.fn(), remove: vi.fn() };
+  const mount = { clientWidth: 1920, clientHeight: 1080,
+    appendChild: vi.fn() } as unknown as HTMLElement;
+  const observer = { observe: vi.fn(), disconnect: vi.fn() };
+  const renderer = {
+    domElement: canvas, outputColorSpace: "", info: { render: { calls: 12, triangles: 100 },
+      memory: { geometries: 3, textures: 0 } },
+    setPixelRatio: vi.fn(), setSize: vi.fn(),
+    compile: vi.fn(() => { if (failCompile) throw new Error("shader fault"); }),
+    render: vi.fn(), dispose: vi.fn(), forceContextLoss: vi.fn(),
+    renderLists: { dispose: vi.fn() },
+  };
+  return { canvas, mount, observer, renderer, options: {
+    rendererFactory: () => renderer as unknown as WebGLRenderer,
+    observerFactory: () => observer as unknown as ResizeObserver,
+  } };
+}
+
+it("keeps one canvas and reuses geometry while resizing low and medium views", () => {
+  const host = fakeSceneHost();
+  const scene = new SpaceScene(host.mount, host.options);
+  const session = new SpaceSession(); session.reset("training");
+  const geometry = scene.sector.rocks.geometry;
+  for (let i = 0; i < 10; i++) scene.update(session, 1);
+  expect(host.renderer.render).toHaveBeenCalledTimes(10);
+  expect(scene.sector.rocks.geometry).toBe(geometry);
+  expect(host.mount.appendChild).toHaveBeenCalledTimes(1);
+  expect(host.canvas.style.width).toBe("100%");
+  scene.setQuality("low");
+  expect(host.renderer.setSize).toHaveBeenLastCalledWith(1280, 720, false);
+  scene.setQuality("medium");
+  expect(host.renderer.setSize).toHaveBeenLastCalledWith(1920, 1080, false);
+  expect(scene.sector.camera.aspect).toBeCloseTo(16 / 9);
+  expect(scene.sector.stars.position.distanceTo(scene.sector.camera.position)).toBe(0);
+  scene.dispose(); scene.dispose();
+  expect(host.observer.disconnect).toHaveBeenCalledTimes(1);
+  expect(host.renderer.dispose).toHaveBeenCalledTimes(1);
+  expect(host.canvas.remove).toHaveBeenCalledTimes(1);
+});
+
+it("rolls back canvas, observer and render resources after a compile fault", () => {
+  const host = fakeSceneHost(true);
+  let resources: Resources | undefined;
+  expect(() => new SpaceScene(host.mount, { ...host.options,
+    sectorFactory: (owner) => { resources = owner; return buildSector(owner); },
+  })).toThrow("shader fault");
+  expect(resources?.size).toBe(0);
+  expect(host.observer.disconnect).toHaveBeenCalledTimes(1);
+  expect(host.renderer.dispose).toHaveBeenCalledTimes(1);
+  expect(host.renderer.forceContextLoss).toHaveBeenCalledTimes(1);
+  expect(host.canvas.remove).toHaveBeenCalledTimes(1);
 });
 
 it("pools rocket and occluded cannon feedback without drawing through a wall", () => {
