@@ -3,6 +3,8 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { SeededRandom } from "@clockwork/shared";
 import { GATES, PICKUPS, ROCKS, STATIONS } from "./map";
 import type { SpaceSession } from "./SpaceSession";
+import { eyeOf } from "./flight";
+import type { Ship } from "./types";
 
 export class Resources {
   private readonly values = new Set<{ dispose(): void }>();
@@ -138,6 +140,10 @@ export function buildSector(resources: Resources) {
     stars.frustumCulled = false;
     stars.renderOrder = -1;
     world.add(stars);
+    const sill = new T.Mesh(resources.own(new T.BoxGeometry(1.25, 0.12, 0.18)),
+      resources.own(new T.MeshBasicMaterial({ color: 0x253443 })));
+    sill.position.set(0, -0.67, -1);
+    camera.add(sill);
     return { world, camera, station, rocks, gates, pickups, drones, rockets,
       stars, traces, tracePositions };
   } catch (error) {
@@ -217,5 +223,138 @@ export class SectorUpdater {
       tracePositions[j + 5] = trace.active ? trace.b.z : 0;
     }
     (traces.geometry.getAttribute("position") as T.BufferAttribute).needsUpdate = true;
+  }
+}
+
+export function updateCockpitCamera(camera: T.PerspectiveCamera, ship: Ship): void {
+  camera.quaternion.copy(ship.q);
+  eyeOf(ship, camera.position);
+  camera.updateMatrixWorld();
+}
+
+export function fitIndicator(x: number, y: number, behind: boolean,
+  out: { x: number; y: number; bearing: number; offscreen: boolean }): void {
+  x = Number.isFinite(x) ? x : 0.8;
+  y = Number.isFinite(y) ? y : 0;
+  if (behind) { x *= -1; y *= -1; }
+  out.offscreen = behind || Math.abs(x) > 0.8 || Math.abs(y) > 0.65;
+  if (out.offscreen) {
+    if (Math.abs(x) + Math.abs(y) < 1e-8) x = 0.8;
+    const scale = 1 / Math.max(Math.abs(x) / 0.8, Math.abs(y) / 0.65);
+    x *= scale; y *= scale;
+  }
+  out.bearing = Math.atan2(-y, x) * 180 / Math.PI + 90;
+  out.x = 50 + x * 50;
+  out.y = 50 - y * 50;
+}
+
+type SceneOptions = {
+  rendererFactory?: () => T.WebGLRenderer;
+  observerFactory?: (callback: ResizeObserverCallback) => ResizeObserver;
+  sectorFactory?: typeof buildSector;
+};
+
+export class SpaceScene {
+  readonly resources = new Resources();
+  readonly sector!: ReturnType<typeof buildSector>;
+  readonly renderer!: T.WebGLRenderer;
+  readonly marker = { x: 50, y: 50, behind: false, offscreen: false, bearing: 0,
+    kind: "none" as "gate" | "target" | "none", distance: 0, hull: 0 };
+  private updater!: SectorUpdater;
+  private observer: ResizeObserver | null = null;
+  private readonly point = new T.Vector3();
+  private quality: "medium" | "low" = "medium";
+  private disposed = false;
+
+  constructor(private readonly mount: HTMLElement, options: SceneOptions = {}) {
+    let renderer: T.WebGLRenderer | undefined;
+    let observer: ResizeObserver | undefined;
+    try {
+      this.sector = (options.sectorFactory ?? buildSector)(this.resources);
+      this.updater = new SectorUpdater(this.sector);
+      renderer = options.rendererFactory?.() ?? new T.WebGLRenderer({
+        antialias: true, powerPreference: "high-performance",
+      });
+      this.renderer = renderer;
+      renderer.outputColorSpace = T.SRGBColorSpace;
+      renderer.setPixelRatio(1);
+      renderer.domElement.tabIndex = 0;
+      renderer.domElement.style.width = "100%";
+      renderer.domElement.style.height = "100%";
+      renderer.domElement.style.display = "block";
+      renderer.domElement.setAttribute("aria-label", "Space flight canvas");
+      mount.appendChild(renderer.domElement);
+      observer = (options.observerFactory ?? ((callback) => new ResizeObserver(callback)))(this.resize);
+      this.observer = observer;
+      observer.observe(mount);
+      this.resize();
+      renderer.compile(this.sector.world, this.sector.camera);
+    } catch (error) {
+      observer?.disconnect();
+      this.resources.dispose();
+      renderer?.renderLists.dispose();
+      renderer?.dispose();
+      renderer?.forceContextLoss();
+      renderer?.domElement.remove();
+      throw error;
+    }
+  }
+
+  get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
+
+  setQuality(quality: "medium" | "low"): void {
+    this.quality = quality;
+    this.resize();
+  }
+
+  private resize = (): void => {
+    const width = Math.max(1, this.mount.clientWidth);
+    const height = Math.max(1, this.mount.clientHeight);
+    const scale = this.quality === "low" ? Math.min(1, 1280 / width, 720 / height) : 1;
+    this.renderer.setSize(Math.round(width * scale), Math.round(height * scale), false);
+    this.sector.camera.aspect = width / height;
+    this.sector.camera.updateProjectionMatrix();
+  };
+
+  update(session: SpaceSession, alpha: number): void {
+    const { world, camera, stars } = this.sector;
+    updateCockpitCamera(camera, session.player);
+    stars.position.copy(camera.position);
+    this.updater.updateActors(session, alpha);
+    this.updater.updateEffects(session, alpha);
+
+    const gate = session.mode === "training" ? GATES[session.gate] : undefined;
+    let target: Ship | undefined;
+    let distanceSq = Infinity;
+    for (const drone of session.drones) {
+      if (drone.hull <= 0) continue;
+      const nextDistance = drone.p.distanceToSquared(session.player.p);
+      if (nextDistance < distanceSq) { target = drone; distanceSq = nextDistance; }
+      if (drone.id === session.player.lockId) { target = drone; break; }
+    }
+    const locked = target?.id === session.player.lockId;
+    const objectiveGate = locked ? undefined : gate;
+    this.marker.kind = objectiveGate ? "gate" : target ? "target" : "none";
+    if (objectiveGate) this.point.set(...objectiveGate);
+    else if (target) this.point.copy(target.p);
+    else this.point.copy(session.player.p);
+    this.marker.distance = this.point.distanceTo(session.player.p);
+    this.marker.hull = objectiveGate ? 0 : target?.hull ?? 0;
+    this.point.applyMatrix4(camera.matrixWorldInverse);
+    this.marker.behind = this.point.z >= 0;
+    this.point.applyMatrix4(camera.projectionMatrix);
+    fitIndicator(this.point.x, this.point.y, this.marker.behind, this.marker);
+    this.renderer.render(world, camera);
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.observer?.disconnect();
+    this.resources.dispose();
+    this.renderer.renderLists.dispose();
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
+    this.canvas.remove();
   }
 }
