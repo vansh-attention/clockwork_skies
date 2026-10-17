@@ -145,10 +145,10 @@ export function LegacyOnlineGame() {
         <label>ROOM ACCESS CODE<input value={profile.inviteCode} onChange={(event) => updateProfile({ inviteCode: event.target.value.trim() })} /></label>
         <fieldset><legend>AIRCRAFT PAINT</legend><div className="paint-row">{PAINTS.map((paint) => <button type="button" key={paint.id} className={profile.paint === paint.id ? "selected" : ""} onClick={() => updateProfile({ paint: paint.id })} aria-label={paint.name} aria-pressed={profile.paint === paint.id} title={paint.name} style={{ "--paint": paint.accent, "--paint-body": paint.body } as CSSProperties}><span /></button>)}</div></fieldset>
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="launch" disabled={joining || profile.callsign.trim().length < 2 || !profile.inviteCode}>{joining ? "CONTACTING TOWERâ€¦" : "ENTER THE SKIES"}<span>â†—</span></button>
+        <button className="launch" disabled={joining || profile.callsign.trim().length < 2 || !profile.inviteCode}>{joining ? "CONTACTING TOWER…" : "ENTER THE SKIES"}<span>↗</span></button>
         <small>Open another browser or LAN device to join before takeoff. Empty seats become bots.</small>
       </form>
-      <button className="title-manual" onClick={openManual}>FLIGHT MANUAL <span>â†—</span></button>
+      <button className="title-manual" onClick={openManual}>FLIGHT MANUAL <span>↗</span></button>
       <div className="title-footer"><span>ILLUSTRATED AERIAL BATTLE ROYALE</span><span>16 PILOTS / ONE REDEPLOY</span></div>
     </section>}
 
@@ -171,26 +171,26 @@ export function LegacyOnlineGame() {
         <div><span>RESERVE</span><strong>{local?.redeploysRemaining ?? 1}</strong></div>
       </aside>
       {local?.status === "active" && <><div className={`reticle ${hud.target ? "locked" : ""}`} style={{ left: `${hud.sightX ?? 50}%`, top: `${hud.sightY ?? 50}%` }} aria-hidden="true"><span /><i /><b>{hud.target ? "ROCKET LOCK" : "+"}</b></div>
-        <div className="storm-bearing" role="status">{outsideStorm ? "âš  RETURN TO THE SAFE SKY" : "SAFE AIRSPACE"}</div>
-        {!locked && !settingsOpen && <button className="capture-hint" onClick={() => { scene?.canvas.focus(); void scene?.canvas.requestPointerLock?.()?.catch(() => {}); }}>CLICK TO FLY Â· ESC RELEASES MOUSE</button>}</>}
+        <div className="storm-bearing" role="status">{outsideStorm ? "⚠ RETURN TO THE SAFE SKY" : "SAFE AIRSPACE"}</div>
+        {!locked && !settingsOpen && <button className="capture-hint" onClick={() => { scene?.canvas.focus(); void scene?.canvas.requestPointerLock?.()?.catch(() => {}); }}>CLICK TO FLY · ESC RELEASES MOUSE</button>}</>}
       <div className="connection-status"><i /> {status.toUpperCase()}</div>
-      <div className="control-hint">MOUSE AIM Â· LEFT FIRE Â· RIGHT ROCKET Â· W/S THROTTLE Â· SPACE BOOST Â· ESC RELEASE</div>
-      {local?.status === "lobby" && <div className="center-message"><span>THE TOWER IS ASSEMBLING YOUR FLIGHT</span><strong>TAKEOFF IN {phaseSeconds}s</strong><p>{Object.values(state?.players ?? {}).filter((player) => !player.bot).length} human pilots aboard Â· bots fill the remaining seats</p></div>}
+      <div className="control-hint">MOUSE AIM · LEFT FIRE · RIGHT ROCKET · W/S THROTTLE · SPACE BOOST · ESC RELEASE</div>
+      {local?.status === "lobby" && <div className="center-message"><span>THE TOWER IS ASSEMBLING YOUR FLIGHT</span><strong>TAKEOFF IN {phaseSeconds}s</strong><p>{Object.values(state?.players ?? {}).filter((player) => !player.bot).length} human pilots aboard · bots fill the remaining seats</p></div>}
       {local?.status === "redeploying" && <div className="center-message" role="status"><span>EMERGENCY SPRING REWIND</span><strong>REDEPLOYING</strong><p>Your one reserve aircraft is winding up.</p></div>}
-      {local?.status === "spectating" && state?.phase !== "complete" && <div className="center-message spectator"><span>FINAL AIRFRAME LOST</span><strong>SPECTATING</strong><p>Following the last pilots through the storm.</p><button onClick={() => scene?.cycleSpectator()}>NEXT PILOT â†’</button><button onClick={() => void playAgain()}>JOIN ANOTHER FLIGHT</button></div>}
+      {local?.status === "spectating" && state?.phase !== "complete" && <div className="center-message spectator"><span>FINAL AIRFRAME LOST</span><strong>SPECTATING</strong><p>Following the last pilots through the storm.</p><button onClick={() => scene?.cycleSpectator()}>NEXT PILOT →</button><button onClick={() => void playAgain()}>JOIN ANOTHER FLIGHT</button></div>}
       {state?.phase === "complete" && <section className="results" aria-labelledby="results-title">
         <span>FLIGHT COMPLETE</span><h2 id="results-title">{local?.status === "winner" ? "SKY CROWNED" : "UNTIL NEXT FLIGHT"}</h2>
         <p>{winner ? `${winner.callsign} is the last pilot aloft.` : "The clockwork sky has fallen silent."} Your kills: {local?.kills ?? 0}.</p>
-        <ol>{standings.slice(0, 5).map((player) => <li key={player.id}><span>{player.id === state.winnerId ? "â™› " : ""}{player.callsign}{player.bot ? " Â· BOT" : ""}</span><b>{player.kills} kills</b></li>)}</ol>
-        <button className="launch" disabled={joining} onClick={() => void playAgain()}>FLY AGAIN â†—</button><button onClick={() => void leave()}>BACK TO HANGAR</button>
+        <ol>{standings.slice(0, 5).map((player) => <li key={player.id}><span>{player.id === state.winnerId ? "♛ " : ""}{player.callsign}{player.bot ? " · BOT" : ""}</span><b>{player.kills} kills</b></li>)}</ol>
+        <button className="launch" disabled={joining} onClick={() => void playAgain()}>FLY AGAIN ↗</button><button onClick={() => void leave()}>BACK TO HANGAR</button>
       </section>}
       {event && event.type !== "shot" && <div className="event-toast" role="status">{event.type === "pickup" ? `${event.pickupType.toUpperCase()} COLLECTED` : event.type === "damage" ? "AIRFRAME HIT" : event.type.replaceAll("-", " ").toUpperCase()}</div>}
       <div className="sr-live" aria-live="polite">{hud.phase}, {hud.alive} pilots remain. {local?.status}.</div>
     </>}
     {settingsOpen && <section className="settings" ref={settingsRef} tabIndex={-1} aria-label="Flight manual">
-      <div><span>FLIGHT MANUAL / 01</span><button onClick={() => { setSettingsOpen(false); scene?.canvas.focus(); }} aria-label="Close flight manual">Ã—</button></div>
+      <div><span>FLIGHT MANUAL / 01</span><button onClick={() => { setSettingsOpen(false); scene?.canvas.focus(); }} aria-label="Close flight manual">×</button></div>
       <h2>Keep your wings wound.</h2><p>Stay inside the red storm boundary. Collect colored rings for repair (coral), rockets (gold), boost (green) and shield (violet). You have one automatic redeploy.</p>
-      <dl className="controls"><dt>Mouse</dt><dd>Aim / assisted steering</dd><dt>Left / right click</dt><dd>Cannon / locked rocket</dd><dt>W / S</dt><dd>Throttle up / down</dd><dt>A / D</dt><dd>Fine bank</dd><dt>Space</dt><dd>Boost</dd><dt>C</dt><dd>Rear view (hold)</dd><dt>Q / 1â€“4</dt><dd>Ping / emotes</dd><dt>Esc</dt><dd>Release mouse / close manual</dd></dl>
+      <dl className="controls"><dt>Mouse</dt><dd>Aim / assisted steering</dd><dt>Left / right click</dt><dd>Cannon / locked rocket</dd><dt>W / S</dt><dd>Throttle up / down</dd><dt>A / D</dt><dd>Fine bank</dd><dt>Space</dt><dd>Boost</dd><dt>C</dt><dd>Rear view (hold)</dd><dt>Q / 1–4</dt><dd>Ping / emotes</dd><dt>Esc</dt><dd>Release mouse / close manual</dd></dl>
       <label className="checkbox"><input type="checkbox" checked={reducedMotion} onChange={(event) => { setReducedMotion(event.target.checked); try { localStorage.setItem("clockwork-reduced-motion", String(event.target.checked)); } catch {} }} />REDUCED MOTION</label>
       <label className="checkbox"><input type="checkbox" checked={muted} onChange={(event) => setMuted(event.target.checked)} />MUTE AUDIO</label>
       <details><summary>Illustration diagnostics</summary><label>RENDER CHANNEL<select value={debugView} onChange={(event) => setDebugView(event.target.value as DebugView)}><option value="final">Final illustrated view</option><option value="color">Color</option><option value="surface-id">Surface IDs</option><option value="depth">Depth</option><option value="normals">Normals</option><option value="mask">Contour mask</option></select></label></details>
