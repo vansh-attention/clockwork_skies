@@ -1,11 +1,37 @@
 import { RULES } from "./types";
 
 export class FrameDriver {
+  private handle: number | null = null;
+  private anchor = 0;
+  private generation = 0;
   running = false;
-  constructor(_frame: (rawSeconds: number) => void, _request: (callback: FrameRequestCallback) => number,
-    _cancel: (handle: number) => void, _now: () => number) {}
-  resume(): number { return 0; }
-  stop(): void {}
+  constructor(private frame: (rawSeconds: number) => void,
+    private request: (callback: FrameRequestCallback) => number,
+    private cancel: (handle: number) => void, private now: () => number) {}
+  resume(): number {
+    if (this.running) return this.anchor;
+    this.running = true;
+    this.anchor = this.now();
+    this.schedule();
+    return this.anchor;
+  }
+  private schedule(): void {
+    const generation = this.generation;
+    this.handle = this.request((stamp) => {
+      if (!this.running || generation !== this.generation) return;
+      this.handle = null;
+      const raw = Math.max(0, (stamp - this.anchor) / 1000);
+      this.anchor = stamp;
+      this.frame(raw);
+      if (this.running && generation === this.generation) this.schedule();
+    });
+  }
+  stop(): void {
+    this.running = false;
+    this.generation++;
+    if (this.handle !== null) this.cancel(this.handle);
+    this.handle = null;
+  }
 }
 
 export class FixedClock {
