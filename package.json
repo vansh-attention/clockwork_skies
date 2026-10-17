@@ -23,7 +23,13 @@
     "test:tools": "tsx --test tools/*.test.ts",
     "pretypecheck": "npm run build:packages",
     "verify": "npm run typecheck && npm test && npm run build && npm run validate:content && npm run simulate -- --matches=10",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "pretest:space": "npm run build:packages",
+    "test:space": "npm exec -w @clockwork/client -- vitest run src/space",
+    "test:e2e:space": "playwright test -c playwright.space.config.ts",
+    "bench:space": "node tools/space-benchmark.mjs",
+    "build:space": "npm run build:packages && npm run build -w @clockwork/client",
+    "preview:space": "npm exec -w @clockwork/client -- vite preview --host 127.0.0.1 --strictPort"
   },
   "engines": {
     "node": ">=24.0.0"
