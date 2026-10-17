@@ -11,7 +11,7 @@ test("two real browser pilots enter the same authoritative bot-filled match", as
     page.on("console", message => { if (message.type() === "error" || /GL_INVALID_OPERATION|missing fragment shader outputs/.test(message.text())) errors.push(message.text()); });
   }
   try {
-    await Promise.all([a.goto(baseURL!), b.goto(baseURL!)]);
+    await Promise.all([a.goto(`${baseURL!}?mode=legacy-online`), b.goto(`${baseURL!}?mode=legacy-online`)]);
     await Promise.all([expect(a.getByRole("heading", { name: /clockwork.*skies/i })).toBeVisible(), expect(b.getByRole("heading", { name: /clockwork.*skies/i })).toBeVisible()]);
     await a.screenshot({ path: "test-results/title.png" });
     await a.getByLabel("CALLSIGN", { exact: true }).fill("TEST ALPHA");
