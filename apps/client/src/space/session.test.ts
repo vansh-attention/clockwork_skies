@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { Vector3 } from "three";
 import { SpaceSession } from "./SpaceSession";
 import { DRONE_SPAWNS, GATES, PICKUPS, TARGETS } from "./map";
 import { neutral } from "./types";
@@ -82,4 +83,58 @@ it("freezes a lost or completed training mission", () => {
   won.tick(1 / 60, neutral());
   expect(won.result).toBe("won");
   const completeTime = won.time; won.tick(1 / 60, neutral()); expect(won.time).toBe(completeTime);
+});
+
+it("moves only skirmish drones and keeps fixed-input outcomes deterministic", () => {
+  const run = () => {
+    const session = new SpaceSession(); session.reset("skirmish", 3, 123);
+    const before = session.drones.map((drone) => drone.p.clone());
+    for (let i = 0; i < 120; i++) session.tick(1 / 60, { ...neutral(), strafe: 0.2 });
+    expect(session.drones.slice(0, 3).some((drone, index) => drone.p.distanceTo(before[index]!) > 1)).toBe(true);
+    expect(session.drones.slice(3).every((drone) => drone.hull === 0)).toBe(true);
+    return session.ships.map((ship) => ({ p: ship.p.toArray(), q: ship.q.toArray(), hull: ship.hull }));
+  };
+  expect(run()).toEqual(run());
+  const training = new SpaceSession(); training.reset("training");
+  const before = training.drones[0]!.p.clone();
+  for (let i = 0; i < 120; i++) training.tick(1 / 60, neutral());
+  expect(training.drones[0]!.p.toArray()).toEqual(before.toArray());
+});
+
+it("does not let a drone fire through a station", () => {
+  const session = new SpaceSession(); session.reset("skirmish", 1, 42);
+  const drone = session.drones[0]!;
+  drone.p.set(-410, 0, -80); drone.prevP.copy(drone.p);
+  drone.q.setFromAxisAngle(new Vector3(0, 1, 0), -Math.PI / 2);
+  session.player.p.set(-210, 0, -80); session.player.prevP.copy(session.player.p);
+  for (let i = 0; i < 300; i++) {
+    drone.p.set(-410, 0, -80); drone.prevP.copy(drone.p); drone.v.set(0, 0, 0);
+    session.player.p.set(-210, 0, -80); session.player.prevP.copy(session.player.p);
+    session.tick(1 / 60, neutral());
+    expect(session.events.some((event) => event.kind === "shot" && event.owner === drone.id)).toBe(false);
+  }
+});
+
+it("limits visible drone cannon cadence", () => {
+  const session = new SpaceSession(); session.reset("skirmish", 1, 42);
+  const drone = session.drones[0]!;
+  let shots = 0;
+  for (let i = 0; i < 360; i++) {
+    drone.p.set(0, 0, 0); drone.prevP.copy(drone.p); drone.v.set(0, 0, 0); drone.q.identity();
+    session.player.p.set(0, 0, -120); session.player.prevP.copy(session.player.p);
+    session.tick(1 / 60, neutral());
+    shots += session.events.filter((event) => event.kind === "shot" && event.owner === drone.id).length;
+  }
+  expect(shots).toBeGreaterThan(0);
+  expect(shots).toBeLessThanOrEqual(3);
+});
+
+it("supports six renewable drones only in benchmark mode", () => {
+  const session = new SpaceSession(); session.reset("skirmish", 6, 42, true);
+  session.player.hull = 0;
+  session.drones[0]!.hull = 0;
+  session.tick(1 / 60, neutral());
+  expect(session.result).toBe("playing");
+  expect(session.remaining).toBe(6);
+  expect(session.player.hull).toBe(100);
 });
