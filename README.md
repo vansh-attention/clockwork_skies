@@ -1,8 +1,8 @@
 # Clockwork Skies
 
-A playable **local multiplayer MVP** of an illustrated, first-person aerial battle royale. Original procedural aircraft and mechanical landmarks surround a miniature spherical planet. One authoritative Colyseus room handles each match; bots fill empty seats to sixteen pilots.
+Clockwork Skies now opens as an **offline-first, first-person spacecraft game**. Fly through the bounded Cartesian Drift Yard, clear ordered gates, collect supplies and fight local drones without a server, invite code or multiplayer session. The original globe-based multiplayer MVP remains available separately at `?mode=legacy-online`.
 
-This is not the complete private-alpha release. The agreed boundary is in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md), with observed verification results in [docs/VERIFICATION.md](docs/VERIFICATION.md).
+The local gameplay direction and measured verification record live in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md). The older multiplayer boundary remains in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md).
 
 ## Play locally
 
@@ -10,10 +10,12 @@ Requires **Node.js 24+**, npm, and a desktop browser with WebGL2.
 
 ```sh
 npm ci
-npm run dev
+npm run dev:space
 ```
 
-Open **http://localhost:5173**. Choose a callsign and aircraft paint, leave the room access code as **`ALPHA-LOCAL`**, and enter the skies. Open a second browser/tab before the lobby countdown expires to share the match. Empty seats become server-controlled bots.
+Open **http://127.0.0.1:5173** and choose **Launch training**, **Launch skirmish**, or **Keyboard flight**. The local route does not contact the game server or require `.env`.
+
+**Legacy multiplayer — parked:** open `http://127.0.0.1:5173/?mode=legacy-online` for the old server-backed flow.
 
 The development server listens on `127.0.0.1:2567` by default. No external accounts, API keys, paid services, or Google Fonts are needed. Root `.env` is optional and is loaded by `npm run dev` if present; `.env.example` shows the supported local settings. The example secret is a placeholder, not a production secret.
 
