@@ -37,6 +37,10 @@ npm run bench:space -- --quality=low --drones=3 --seconds=60 --port=4175
 
 The benchmark records raw frame timing, CPU timing, drawing-buffer dimensions, render calls, triangles, resource counts, pause/visibility state, and the renderer identifier when available. A software-rendered run, paused run, hidden run, wrong-resolution run, or short run is a failure/inconclusive result—not evidence that the target passed.
 
+### Recorded run
+
+On the current Windows machine, Chrome reported `ANGLE (AMD, AMD Radeon 740M Graphics ... D3D11)`. Medium, 1920×1080, six benchmark entities, 60 seconds: **PASS**; median frame interval `6.9 ms`, p95 `7.5 ms`, CPU mean `0.33 ms`, 9 render calls, 7,616 triangles, 9,256 frames, 0 pauses, and 0.1 seconds of dropped simulation time. Two non-game 404 resource warnings were emitted and remain a follow-up cleanup item; they did not affect the benchmark gate.
+
 ## Playtest checklist
 
 - The start view shows at least two recognizable landmarks before launch.
