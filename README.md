@@ -1,21 +1,21 @@
 # Clockwork Skies
 
-Clockwork Skies now opens as an **offline-first, first-person spacecraft game**. Fly through the bounded Cartesian Drift Yard, clear ordered gates, collect supplies and fight local drones without a server, invite code or multiplayer session. The original globe-based multiplayer MVP remains available separately at `?mode=legacy-online`.
+Clockwork Skies opens on the **illustrated tiny-world aerial battle royale**. Fly around a procedural globe with other local pilots and bot-filled seats. The separate offline first-person spacecraft slice remains available at `?mode=local-space`.
 
 The local gameplay direction and measured verification record live in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md). The older multiplayer boundary remains in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md).
 
-## Play locally
+## Play the illustrated globe locally
 
 Requires **Node.js 24+**, npm, and a desktop browser with WebGL2.
 
 ```sh
 npm ci
-npm run dev:space
+npm run dev
 ```
 
-Open **http://127.0.0.1:5173** and choose **Launch training**, **Launch skirmish**, or **Keyboard flight**. The local route does not contact the game server or require `.env`.
+Open **http://127.0.0.1:5173** and enter the skies. The default globe game uses the local server; `ALPHA-LOCAL` is the development room code.
 
-**Legacy multiplayer — parked:** open `http://127.0.0.1:5173/?mode=legacy-online` for the old server-backed flow.
+**Offline space slice:** run `npm run dev:space` and open `http://127.0.0.1:5173/?mode=local-space` for training, skirmish, or keyboard flight without a server or invite code. Its gameplay and native benchmark are documented in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md).
 
 The development server listens on `127.0.0.1:2567` by default. No external accounts, API keys, paid services, or Google Fonts are needed. Root `.env` is optional and is loaded by `npm run dev` if present; `.env.example` shows the supported local settings. The example secret is a placeholder, not a production secret.
 

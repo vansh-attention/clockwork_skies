@@ -2,7 +2,7 @@
 
 ## Current direction
 
-The default client is now a local first-person spacecraft game in **The Drift Yard**, a bounded Cartesian station-and-asteroid arena. The old globe-based multiplayer game remains available at `?mode=legacy-online` and is not required for local play.
+The first-person spacecraft slice lives at `?mode=local-space` in **The Drift Yard**, a bounded Cartesian station-and-asteroid arena. The illustrated globe-based multiplayer game is the default route. The space slice does not require its server for local play.
 
 ## Local start
 
@@ -11,7 +11,7 @@ npm ci
 npm run dev:space
 ```
 
-Open `http://127.0.0.1:5173`. Training starts with five ordered gates and three stationary targets. Skirmish starts with three local drones. Keyboard flight is available when pointer lock is unavailable.
+Open `http://127.0.0.1:5173/?mode=local-space`. Training starts with five ordered gates and three stationary targets. Skirmish starts with three local drones. Keyboard flight is available when pointer lock is unavailable.
 
 ## Verification run
 
@@ -35,11 +35,13 @@ npm run bench:space -- --quality=medium --drones=6 --seconds=60 --port=4175
 npm run bench:space -- --quality=low --drones=3 --seconds=60 --port=4175
 ```
 
-The benchmark records raw frame timing, CPU timing, drawing-buffer dimensions, render calls, triangles, resource counts, pause/visibility state, and the renderer identifier when available. A software-rendered run, paused run, hidden run, wrong-resolution run, or short run is a failure/inconclusive result—not evidence that the target passed.
+The benchmark records raw frame timing, CPU timing, drawing-buffer dimensions, render calls, triangles, resource counts, pause/visibility state, the renderer identifier, console errors, and `failedResourceRequests` when available. That last field includes HTTP 4xx/5xx responses, network failures, and URL-bearing browser resource warnings that do not reach Playwright's page network events. Each entry identifies its URL, status or network error, and source. Any failed resource request fails the benchmark gate. A software-rendered run, paused run, hidden run, wrong-resolution run, or short run is a failure/inconclusive result—not evidence that the target passed.
 
 ### Recorded run
 
-On the current Windows machine, Chrome reported `ANGLE (AMD, AMD Radeon 740M Graphics ... D3D11)`. Medium, 1920×1080, six benchmark entities, 60 seconds: **PASS**; median frame interval `6.9 ms`, p95 `7.5 ms`, CPU mean `0.33 ms`, 9 render calls, 7,616 triangles, 9,256 frames, 0 pauses, and 0.1 seconds of dropped simulation time. Two non-game 404 resource warnings were emitted and remain a follow-up cleanup item; they did not affect the benchmark gate.
+On the October 19 run, Chrome reported `ANGLE (AMD, AMD Radeon 740M Graphics ... D3D11)`. Medium, 1920×1080, six benchmark entities, 60 seconds: **PASS**; median frame interval `6.9 ms`, p95 `7.5 ms`, CPU mean `0.33 ms`, 9 render calls, 7,616 triangles, 9,256 frames, 0 pauses, and 0.1 seconds of dropped simulation time. The two non-game 404 warnings were both Chrome requests for `/favicon.ico`: the page had no declared icon, and Chrome fetched its implicit fallback twice. The page network listener did not see these browser-level requests, so the earlier gate missed them. The client now declares and serves `/favicon.svg`, and the benchmark reports browser resource warnings with their URLs.
+
+On October 25, the medium/1920×1080/six-entity/60-second native Chrome run at `?mode=local-space` **PASS**ed with zero console errors and zero failed resource requests. Median frame interval was `7.0 ms`, p95 `14 ms`, and CPU mean `0.38 ms`. A controlled run against a temporarily missing favicon produced two URL-labeled 404 entries in `failedResourceRequests` and a **FAIL** result; the built file was then restored.
 
 ## Playtest checklist
 
