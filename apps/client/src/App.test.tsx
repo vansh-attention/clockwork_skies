@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { App } from "./App";
+import { LegacyOnlineGame as App } from "./LegacyOnlineGame";
 
 describe("pilot launch screen", () => {
   it("explains local multiplayer and exposes controls before launch", () => {

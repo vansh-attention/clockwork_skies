@@ -1,10 +1,10 @@
 # Clockwork Skies
 
-A playable **local multiplayer MVP** of an illustrated, first-person aerial battle royale. Original procedural aircraft and mechanical landmarks surround a miniature spherical planet. One authoritative Colyseus room handles each match; bots fill empty seats to sixteen pilots.
+Clockwork Skies opens on the **illustrated tiny-world aerial battle royale**. Fly around a procedural globe with other local pilots and bot-filled seats. The separate offline first-person spacecraft slice remains available at `?mode=local-space`.
 
-This is not the complete private-alpha release. The agreed boundary is in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md), with observed verification results in [docs/VERIFICATION.md](docs/VERIFICATION.md).
+The local gameplay direction and measured verification record live in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md). The older multiplayer boundary remains in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md).
 
-## Play locally
+## Play the illustrated globe locally
 
 Requires **Node.js 24+**, npm, and a desktop browser with WebGL2.
 
@@ -13,7 +13,9 @@ npm ci
 npm run dev
 ```
 
-Open **http://localhost:5173**. Choose a callsign and aircraft paint, leave the room access code as **`ALPHA-LOCAL`**, and enter the skies. Open a second browser/tab before the lobby countdown expires to share the match. Empty seats become server-controlled bots.
+Open **http://127.0.0.1:5173** and enter the skies. The default globe game uses the local server; `ALPHA-LOCAL` is the development room code.
+
+**Offline space slice:** run `npm run dev:space` and open `http://127.0.0.1:5173/?mode=local-space` for training, skirmish, or keyboard flight without a server or invite code. Its gameplay and native benchmark are documented in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md).
 
 The development server listens on `127.0.0.1:2567` by default. No external accounts, API keys, paid services, or Google Fonts are needed. Root `.env` is optional and is loaded by `npm run dev` if present; `.env.example` shows the supported local settings. The example secret is a placeholder, not a production secret.
 
