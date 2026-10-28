@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { CLOCKWORK_WORLD, PAINTS } from "@clockwork/content";
 import { MATCH_RULES, V, angularDistance, type MatchEvent, type MatchState, type InputCommand } from "@clockwork/shared";
 import { createIllustratedMaterial, IllustratedComposer, type DebugView } from "@clockwork/render";
@@ -51,6 +52,7 @@ export class GameScene {
   private hudElapsed = 0;
   private flightInput: InputCommand | null = null;
   private spectatorId: string | null = null;
+  private soloPresentation = false;
 
   constructor(private readonly container: HTMLDivElement, private readonly onHud: (state: HudState) => void) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
@@ -87,6 +89,7 @@ export class GameScene {
     }
   }
   setReducedMotion(value: boolean) { this.reducedMotion = value; }
+  setSoloPresentation(value: boolean) { this.soloPresentation = value; }
   setFlightInput(value: InputCommand | null) { this.flightInput = value; }
   cycleSpectator() {
     const ids = Object.values(this.state?.players ?? {}).filter((player) => player.status === "active").map((player) => player.id);
@@ -165,6 +168,68 @@ export class GameScene {
         gear.position.y = 22; gear.rotation.x = Math.PI / 2; group.add(gear); this.gears.push(gear);
       }
       this.world.add(group);
+    });
+
+    const cottages: THREE.BufferGeometry[] = [];
+    const roofs: THREE.BufferGeometry[][] = [[], []];
+    CLOCKWORK_WORLD.landmarks.forEach((landmark, district) => {
+      const center = new THREE.Vector3(landmark.direction.x, landmark.direction.y, landmark.direction.z);
+      const tangent = new THREE.Vector3().crossVectors(center,
+        Math.abs(center.y) > 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).normalize();
+      const bitangent = new THREE.Vector3().crossVectors(center, tangent).normalize();
+      for (let house = 0; house < 12; house += 1) {
+        const angle = house * Math.PI * (3 - Math.sqrt(5));
+        const distance = 28 + house % 4 * 7;
+        const direction = center.clone().addScaledVector(tangent, Math.cos(angle) * distance / CLOCKWORK_WORLD.planetRadius)
+          .addScaledVector(bitangent, Math.sin(angle) * distance / CLOCKWORK_WORLD.planetRadius).normalize();
+        const height = 7 + (house + district) % 4 * 2;
+        const transform = new THREE.Matrix4().compose(
+          direction.clone().multiplyScalar(CLOCKWORK_WORLD.planetRadius + 1),
+          new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction),
+          new THREE.Vector3(1, 1, 1));
+        cottages.push(new THREE.BoxGeometry(7, height, 7).translate(0, height * 0.5, 0).applyMatrix4(transform));
+        roofs[(house + district) % 2]!.push(new THREE.ConeGeometry(6, 5, 4)
+          .rotateY(Math.PI / 4).translate(0, height + 2.5, 0).applyMatrix4(transform));
+      }
+    });
+    const cottageGeometry = mergeGeometries(cottages);
+    if (cottageGeometry) this.world.add(new THREE.Mesh(cottageGeometry,
+      createIllustratedMaterial({ color: "#eee9d6", shadow: "#a4ac9c", surfaceId: 0.59 })));
+    cottages.forEach(part => part.dispose());
+    ["#bd6445", "#d19b5a"].forEach((color, index) => {
+      const geometry = mergeGeometries(roofs[index]!);
+      if (geometry) this.world.add(new THREE.Mesh(geometry,
+        createIllustratedMaterial({ color, shadow: "#754e42", surfaceId: 0.61 + index * 0.01 })));
+      roofs[index]!.forEach(part => part.dispose());
+    });
+
+    // Merge small orchard silhouettes into a handful of draw calls. They give
+    // the globe a readable scale in both the title view and following camera.
+    const trunks: THREE.BufferGeometry[] = [];
+    const canopies: THREE.BufferGeometry[][] = [[], [], []];
+    const up = new THREE.Vector3(0, 1, 0);
+    for (let index = 0; index < 210; index += 1) {
+      const y = 1 - 2 * (index + 0.5) / 210;
+      const radius = Math.sqrt(Math.max(0, 1 - y * y));
+      const angle = index * Math.PI * (3 - Math.sqrt(5));
+      const direction = new THREE.Vector3(Math.cos(angle) * radius, y, Math.sin(angle) * radius);
+      const transform = new THREE.Matrix4().compose(
+        direction.clone().multiplyScalar(CLOCKWORK_WORLD.planetRadius + 1),
+        new THREE.Quaternion().setFromUnitVectors(up, direction), new THREE.Vector3(1, 1, 1));
+      const height = 16 + index % 5 * 3;
+      trunks.push(new THREE.CylinderGeometry(1.2, 1.8, 7, 5).translate(0, 4, 0).applyMatrix4(transform));
+      canopies[index % 3]!.push(new THREE.ConeGeometry(7 + index % 3, height, 6)
+        .translate(0, 8 + height * 0.5, 0).applyMatrix4(transform));
+    }
+    const trunkGeometry = mergeGeometries(trunks);
+    if (trunkGeometry) this.world.add(new THREE.Mesh(trunkGeometry,
+      createIllustratedMaterial({ color: "#826f54", shadow: "#4b4e42", surfaceId: 0.69 })));
+    trunks.forEach(geometry => geometry.dispose());
+    ["#43845b", "#5d9967", "#86a96b"].forEach((color, index) => {
+      const geometry = mergeGeometries(canopies[index]!);
+      if (geometry) this.world.add(new THREE.Mesh(geometry,
+        createIllustratedMaterial({ color, shadow: "#416a51", surfaceId: 0.71 + index * 0.01 })));
+      canopies[index]!.forEach(part => part.dispose());
     });
 
     for (let i = 0; i < 54; i += 1) {
@@ -286,9 +351,10 @@ export class GameScene {
     const playerIds = new Set(Object.keys(this.state.players));
     for (const [id, mesh] of this.playerMeshes) if (!playerIds.has(id)) { this.world.remove(mesh); this.playerMeshes.delete(id); }
     for (const [id, player] of Object.entries(this.state.players)) {
-      if (id === this.sessionId) continue;
+      if (id === this.sessionId && !this.soloPresentation) continue;
       let mesh = this.playerMeshes.get(id);
       if (!mesh) { mesh = this.createPlane(player.paint); this.playerMeshes.set(id, mesh); this.world.add(mesh); }
+      mesh.scale.setScalar(id === this.sessionId && this.soloPresentation ? 5.5 : 1);
       mesh.visible = player.status === "active";
       mesh.position.lerp(tmp.set(player.aircraft.position.x, player.aircraft.position.y, player.aircraft.position.z), 0.3);
       mesh.up.copy(mesh.position).normalize();
@@ -341,6 +407,18 @@ export class GameScene {
       const up = p.clone().normalize(); const forward = new THREE.Vector3(followed.aircraft.forward.x, followed.aircraft.forward.y, followed.aircraft.forward.z).normalize();
       this.camera.position.lerp(p.clone().add(up.multiplyScalar(18)).sub(forward.multiplyScalar(32)), 0.08);
       this.camera.up.copy(p).normalize(); this.camera.lookAt(p); return;
+    }
+    if (this.soloPresentation) {
+      const p = new THREE.Vector3(local.aircraft.position.x, local.aircraft.position.y, local.aircraft.position.z);
+      const forward = new THREE.Vector3(local.aircraft.forward.x, local.aircraft.forward.y, local.aircraft.forward.z).normalize();
+      const radialUp = p.clone().normalize();
+      const desired = p.clone().addScaledVector(radialUp, 235).addScaledVector(forward, -180);
+      this.camera.position.lerp(desired, 0.08);
+      this.camera.up.copy(radialUp);
+      this.camera.lookAt(p.clone().addScaledVector(forward, 95).addScaledVector(radialUp, -200));
+      this.cockpit.visible = false;
+      this.sightScreen = { x: 50, y: 50 };
+      return;
     }
     const p = new THREE.Vector3(local.aircraft.position.x, local.aircraft.position.y, local.aircraft.position.z);
     const forward = new THREE.Vector3(local.aircraft.forward.x, local.aircraft.forward.y, local.aircraft.forward.z).normalize();

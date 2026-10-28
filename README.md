@@ -1,6 +1,6 @@
 # Clockwork Skies
 
-Clockwork Skies opens on the **illustrated tiny-world aerial battle royale**. Fly around a procedural globe with other local pilots and bot-filled seats. The separate offline first-person spacecraft slice remains available at `?mode=local-space`.
+Clockwork Skies opens on an **illustrated solo flight** around its procedural tiny world. Enter the skies and fly immediately in the browser. The older multiplayer game remains at `?mode=legacy-online`; the separate first-person spacecraft slice remains at `?mode=local-space`.
 
 The local gameplay direction and measured verification record live in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md). The older multiplayer boundary remains in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md).
 
@@ -13,13 +13,13 @@ npm ci
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173** and enter the skies. The default globe game uses the local server; `ALPHA-LOCAL` is the development room code.
+Open **http://127.0.0.1:5173** and select **Enter the Skies**. The illustrated solo flight needs no server or room code. Click the canvas to capture the mouse; use W/S to change throttle and Space to boost.
 
-**Offline space slice:** run `npm run dev:space` and open `http://127.0.0.1:5173/?mode=local-space` for training, skirmish, or keyboard flight without a server or invite code. Its gameplay and native benchmark are documented in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md).
+**Offline space slice:** open `http://127.0.0.1:5173/?mode=local-space` for training, skirmish, or keyboard flight. Its gameplay and native benchmark are documented in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md).
 
-The development server listens on `127.0.0.1:2567` by default. No external accounts, API keys, paid services, or Google Fonts are needed. Root `.env` is optional and is loaded by `npm run dev` if present; `.env.example` shows the supported local settings. The example secret is a placeholder, not a production secret.
+**Older multiplayer mode:** run `npm run dev:online` and open `http://127.0.0.1:5173/?mode=legacy-online`. Its local game API listens on `127.0.0.1:2567`; `ALPHA-LOCAL` is its development room code. Root `.env` is optional and is loaded by `npm run dev:online` if present.
 
-**Click or focus the flight canvas to fly.** Escape releases the mouse; opening the flight manual stops your local controls but does not pause the shared match. Your aircraft remains vulnerable. Use the results screen to return to the manifest and join another flight.
+The following controls and match rules describe the older multiplayer mode.
 
 ### Controls
 

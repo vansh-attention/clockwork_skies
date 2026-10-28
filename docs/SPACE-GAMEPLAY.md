@@ -2,7 +2,7 @@
 
 ## Current direction
 
-The first-person spacecraft slice lives at `?mode=local-space` in **The Drift Yard**, a bounded Cartesian station-and-asteroid arena. The illustrated globe-based multiplayer game is the default route. The space slice does not require its server for local play.
+The first-person spacecraft slice lives at `?mode=local-space` in **The Drift Yard**, a bounded Cartesian station-and-asteroid arena. The illustrated globe now opens as a solo browser flight at `/`; the older multiplayer version lives at `?mode=legacy-online`. Neither offline slice requires the game server.
 
 ## Local start
 
