@@ -1,0 +1,41 @@
+/* Hill-town screens. Colours, type and panel styles come from styles.css; only city-specific rules live here. */
+.city-app .title-screen>p{max-width:430px}
+.city-time{font-size:23px;font-variant-numeric:tabular-nums;letter-spacing:.02em}
+.city-card-note{margin:0 0 16px;font-size:12px;color:#526153}
+.city-app.exploring .game-canvas canvas{cursor:grab}
+.city-app.exploring .game-canvas canvas:active{cursor:grabbing}
+.city-app .game-canvas canvas:focus-visible{outline:3px solid #c17636;outline-offset:-3px}
+
+.district-panel{position:absolute;top:110px;left:30px;width:232px;color:var(--paper);background:#1e3932de;border:1px solid #efebd380;box-shadow:3px 3px 0 #1b363642;backdrop-filter:blur(5px);padding:14px 0 4px}
+.district-panel-title{display:block;padding:0 16px 10px;font-size:9px;font-weight:700;letter-spacing:.17em;border-bottom:1px solid #e5e8c844}
+.district-panel ul{list-style:none;margin:0;padding:0}
+.district-panel button{display:grid;grid-template-columns:30px 1fr;align-items:center;width:100%;border:0;border-bottom:1px solid #e5e8c822;border-left:4px solid transparent;border-radius:0;background:transparent;color:var(--paper);text-align:left;padding:10px 12px;font-size:11px;letter-spacing:.06em}
+.district-panel li:last-child button{border-bottom:0}
+.district-panel button:hover{background:#f2ecd914}
+.district-panel button[aria-pressed=true]{background:var(--paper);color:var(--ink);border-left-color:var(--accent)}
+.district-panel abbr{text-decoration:none;font-size:9px;font-weight:700;letter-spacing:.12em;color:#ffdfa1}
+.district-panel button[aria-pressed=true] abbr{color:var(--copper)}
+
+.district-card{position:absolute;left:50%;bottom:72px;transform:translateX(-50%);width:470px;max-width:calc(100% - 32px);background:#f4eddbf2;border:1px solid var(--ink);border-left:6px solid var(--accent);box-shadow:5px 5px 0 #263d3944;padding:18px 22px}
+.district-card>span{display:block;font-size:9px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#4b6255}
+.district-card h2{margin:6px 0 4px;font-size:38px;line-height:1.05;letter-spacing:.01em}
+.district-card p{margin:0 0 14px;font-size:13px}
+.district-actions{display:flex;flex-wrap:wrap;gap:8px}
+.district-actions .district-back{margin-left:auto;color:var(--copper)}
+.city-error{top:auto;bottom:150px;transform:translateX(-50%)}
+
+@media(max-width:700px){
+  .city-app .title-screen{background:linear-gradient(180deg,#e3eddaf2 0,#e3eddae0 56%,#e3edda00 78%)}
+  .city-app .title-footer{display:none}
+  .district-panel{top:auto;bottom:12px;left:12px;right:12px;width:auto;padding:0}
+  .district-panel-title{display:none}
+  .district-panel ul{display:flex;overflow-x:auto;scrollbar-width:thin}
+  .district-panel li{flex:0 0 auto}
+  .district-panel li:last-child button,.district-panel button{border-bottom:0}
+  .district-panel button{display:flex;gap:8px;white-space:nowrap;border-left:0;border-top:4px solid transparent;padding:12px 14px}
+  .district-panel button[aria-pressed=true]{border-top-color:var(--accent)}
+  .district-card{bottom:76px;padding:14px 16px}
+  .district-card h2{font-size:28px}
+  .district-actions .district-back{margin-left:0}
+  .city-app .control-hint{display:none}
+}

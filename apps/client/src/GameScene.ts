@@ -52,7 +52,6 @@ export class GameScene {
   private hudElapsed = 0;
   private flightInput: InputCommand | null = null;
   private spectatorId: string | null = null;
-  private soloPresentation = false;
 
   constructor(private readonly container: HTMLDivElement, private readonly onHud: (state: HudState) => void) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
@@ -89,7 +88,6 @@ export class GameScene {
     }
   }
   setReducedMotion(value: boolean) { this.reducedMotion = value; }
-  setSoloPresentation(value: boolean) { this.soloPresentation = value; }
   setFlightInput(value: InputCommand | null) { this.flightInput = value; }
   cycleSpectator() {
     const ids = Object.values(this.state?.players ?? {}).filter((player) => player.status === "active").map((player) => player.id);
@@ -351,10 +349,9 @@ export class GameScene {
     const playerIds = new Set(Object.keys(this.state.players));
     for (const [id, mesh] of this.playerMeshes) if (!playerIds.has(id)) { this.world.remove(mesh); this.playerMeshes.delete(id); }
     for (const [id, player] of Object.entries(this.state.players)) {
-      if (id === this.sessionId && !this.soloPresentation) continue;
+      if (id === this.sessionId) continue;
       let mesh = this.playerMeshes.get(id);
       if (!mesh) { mesh = this.createPlane(player.paint); this.playerMeshes.set(id, mesh); this.world.add(mesh); }
-      mesh.scale.setScalar(id === this.sessionId && this.soloPresentation ? 5.5 : 1);
       mesh.visible = player.status === "active";
       mesh.position.lerp(tmp.set(player.aircraft.position.x, player.aircraft.position.y, player.aircraft.position.z), 0.3);
       mesh.up.copy(mesh.position).normalize();
@@ -407,18 +404,6 @@ export class GameScene {
       const up = p.clone().normalize(); const forward = new THREE.Vector3(followed.aircraft.forward.x, followed.aircraft.forward.y, followed.aircraft.forward.z).normalize();
       this.camera.position.lerp(p.clone().add(up.multiplyScalar(18)).sub(forward.multiplyScalar(32)), 0.08);
       this.camera.up.copy(p).normalize(); this.camera.lookAt(p); return;
-    }
-    if (this.soloPresentation) {
-      const p = new THREE.Vector3(local.aircraft.position.x, local.aircraft.position.y, local.aircraft.position.z);
-      const forward = new THREE.Vector3(local.aircraft.forward.x, local.aircraft.forward.y, local.aircraft.forward.z).normalize();
-      const radialUp = p.clone().normalize();
-      const desired = p.clone().addScaledVector(radialUp, 235).addScaledVector(forward, -180);
-      this.camera.position.lerp(desired, 0.08);
-      this.camera.up.copy(radialUp);
-      this.camera.lookAt(p.clone().addScaledVector(forward, 95).addScaledVector(radialUp, -200));
-      this.cockpit.visible = false;
-      this.sightScreen = { x: 50, y: 50 };
-      return;
     }
     const p = new THREE.Vector3(local.aircraft.position.x, local.aircraft.position.y, local.aircraft.position.z);
     const forward = new THREE.Vector3(local.aircraft.forward.x, local.aircraft.forward.y, local.aircraft.forward.z).normalize();

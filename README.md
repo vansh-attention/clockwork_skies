@@ -1,10 +1,10 @@
 # Clockwork Skies
 
-Clockwork Skies opens on an **illustrated solo flight** around its procedural tiny world. Enter the skies and fly immediately in the browser. The older multiplayer game remains at `?mode=legacy-online`; the separate first-person spacecraft slice remains at `?mode=local-space`.
+Clockwork Skies opens on an **explorable illustrated hill town**: a floating clockwork town whose tower shows your local time and whose gears all tick together once a second. Enter the city to look around its eight districts in the browser. The older multiplayer game remains at `?mode=legacy-online`; the separate first-person spacecraft slice remains at `?mode=local-space`.
 
 The local gameplay direction and measured verification record live in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md). The older multiplayer boundary remains in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md).
 
-## Play the illustrated globe locally
+## Explore the hill town locally
 
 Requires **Node.js 24+**, npm, and a desktop browser with WebGL2.
 
@@ -13,7 +13,7 @@ npm ci
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173** and select **Enter the Skies**. The illustrated solo flight needs no server or room code. Click the canvas to capture the mouse; use W/S to change throttle and Space to boost.
+Open **http://127.0.0.1:5173** and select **Enter the city**. The hill town needs no server or room code. Drag to look around, scroll to zoom, and pick one of the eight districts to fly to it; arrow keys circle the town and Esc returns to the overview. The guide has a reduced-motion setting and the illustration diagnostics. Add `?debug=1` to expose `window.__CLOCKWORK_CITY__()` with draw calls and camera state.
 
 **Offline space slice:** open `http://127.0.0.1:5173/?mode=local-space` for training, skirmish, or keyboard flight. Its gameplay and native benchmark are documented in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md).
 
