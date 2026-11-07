@@ -5,6 +5,8 @@
 .city-app.exploring .game-canvas canvas{cursor:grab}
 .city-app.exploring .game-canvas canvas:active{cursor:grabbing}
 .city-app .game-canvas canvas:focus-visible{outline:3px solid #c17636;outline-offset:-3px}
+/* In play the canvas holds focus for the whole round (the HUD shows where input goes), so a ring would frame the screen. */
+.city-app[data-phase=play] .game-canvas canvas:focus-visible{outline:none}
 
 .district-panel{position:absolute;top:110px;left:30px;width:232px;color:var(--paper);background:#1e3932de;border:1px solid #efebd380;box-shadow:3px 3px 0 #1b363642;backdrop-filter:blur(5px);padding:14px 0 4px}
 .district-panel-title{display:block;padding:0 16px 10px;font-size:9px;font-weight:700;letter-spacing:.17em;border-bottom:1px solid #e5e8c844}
@@ -22,6 +24,7 @@
 .district-card p{margin:0 0 14px;font-size:13px}
 .district-actions{display:flex;flex-wrap:wrap;gap:8px}
 .district-actions .district-back{margin-left:auto;color:var(--copper)}
+.city-app .launch-card .look-around{display:block;width:100%;margin-top:10px}
 .city-error{top:auto;bottom:150px;transform:translateX(-50%)}
 
 @media(max-width:700px){

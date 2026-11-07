@@ -1,7 +1,8 @@
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { CLOCKWORK_WORLD } from "@clockwork/content";
 import { DISTRICTS } from "./districts";
-import { CANAL, ISLAND_RADIUS, STREET, TERRACES, angularGap, createCityLayout, districtAt, groundHeight, polarToXZ } from "./layout";
+import { CANAL, FURNITURE_SIZE, ISLAND_RADIUS, STAIR_BEARINGS, STREET, SUMMIT, TERRACES, angularGap, createCityLayout, createStreetFurniture, districtAt, groundHeight, polarToXZ } from "./layout";
+import { createHillTownWalkWorld } from "../courier/walkWorld";
 
 it("builds the same town from the same seed", () => {
   expect(createCityLayout(7)).toEqual(createCityLayout(7));
@@ -53,4 +54,104 @@ it("assigns a clicked ground point to the district under it", () => {
     expect(districtAt(point.x, point.z)).toBe(index);
   });
   expect(districtAt(0, 10)).toBeNull();
+});
+
+describe("createStreetFurniture", () => {
+  const layout = createCityLayout();
+  const items = createStreetFurniture(layout);
+  const world = createHillTownWalkWorld(layout);
+
+  it("lines the streets with lamps and a few pillar boxes, standing on the ground they are drawn on", () => {
+    const lamps = items.filter((item) => item.kind === "lamp");
+    const boxes = items.filter((item) => item.kind === "postbox");
+    expect(lamps.length).toBeGreaterThan(80);
+    expect(boxes.length).toBeGreaterThan(8);
+    for (const item of items) {
+      expect(world.surfaceAt(item.x, item.z).walkable || Math.hypot(item.x, item.z) < SUMMIT.radius).toBe(true);
+      expect(item.y).toBeCloseTo(world.surfaceAt(item.x, item.z).height, 1);
+    }
+  });
+
+  it("keeps clear of stairways, bridges and landmark plazas", () => {
+    for (const item of items) {
+      const r = Math.hypot(item.x, item.z);
+      if (r > SUMMIT.radius) {
+        for (const stair of STAIR_BEARINGS) expect(angularGap(item.bearing, stair) * r).toBeGreaterThanOrEqual(9 - 1e-9);
+      }
+      for (const landmark of layout.landmarks) expect(Math.hypot(item.x - landmark.x, item.z - landmark.z)).toBeGreaterThanOrEqual(landmark.clearRadius + 3);
+    }
+  });
+
+  it("is solid to the courier", () => {
+    for (const item of items) expect(world.blocked(item.x, item.z, 0.3)).toBe(true);
+  });
+
+  describe("the summit plaza", () => {
+    const summit = items.filter((item) => Math.hypot(item.x, item.z) < SUMMIT.radius);
+    const count = (kind: string) => summit.filter((item) => item.kind === kind).length;
+
+    it("is dressed like a London square: markets, phone kiosks, benches, planters and lamps, all placed", () => {
+      expect(count("stall")).toBe(6);
+      expect(count("kiosk")).toBe(2);
+      expect(count("bench")).toBe(11);
+      expect(count("planter")).toBe(2);
+      // Seven round the edge (the south one gives way to the Great Escapement's plaza) and four on the diagonals.
+      expect(count("lamp")).toBe(11);
+      expect(summit.filter((item) => item.kind === "lamp" && Math.hypot(item.x, item.z) < 40)).toHaveLength(4);
+      for (const item of summit) expect(item.y).toBe(SUMMIT.top);
+    });
+
+    it("keeps every piece clear of the others, the plaza trees and the tower plinth", () => {
+      const solids = [
+        ...summit.map((item) => ({ x: item.x, z: item.z, r: Math.hypot(FURNITURE_SIZE[item.kind].halfX, FURNITURE_SIZE[item.kind].halfZ) })),
+        ...layout.trees.filter((tree) => tree.y === SUMMIT.top).map((tree) => ({ x: tree.x, z: tree.z, r: 1.5 })),
+      ];
+      for (let i = 0; i < solids.length; i += 1) {
+        const a = solids[i]!;
+        expect(Math.max(Math.abs(a.x), Math.abs(a.z)) - a.r).toBeGreaterThan(18 + 2);
+        for (let j = i + 1; j < solids.length; j += 1) {
+          const b = solids[j]!;
+          expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThan(a.r + b.r + 0.3);
+        }
+      }
+    });
+
+    it("leaves the courier's spawn, its first steps and every stairway lane open, plinth to stair head", () => {
+      const spawn = polarToXZ(270 * Math.PI / 180, 50);
+      expect(world.blocked(spawn.x, spawn.z, 1.5)).toBe(false);
+      // Ten units of open paving all round the spawn point (the west plaza tree stands 12 out).
+      for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 12) {
+        for (let d = 1; d <= 9; d += 1) expect(world.blocked(spawn.x + Math.cos(angle) * d, spawn.z + Math.sin(angle) * d, 1.5)).toBe(false);
+      }
+      for (const bearing of STAIR_BEARINGS) {
+        for (let r = 30; r <= SUMMIT.radius - 2; r += 1) {
+          const { x, z } = polarToXZ(bearing, r);
+          expect(world.blocked(x, z, 1.5)).toBe(false);
+        }
+      }
+    });
+
+    it("blocks each piece by its real footprint, turned with it", () => {
+      // Stalls at 38 and 52 degrees (and kiosks at 313/317) put both signs of the rotation to work.
+      expect(summit.some((item) => item.kind === "stall" && Math.abs(item.bearing - 38 * Math.PI / 180) < 1e-9)).toBe(true);
+      for (const item of summit) {
+        const size = FURNITURE_SIZE[item.kind];
+        if (size.round) continue;
+        // Into the world from the piece's own frame (kit frame / walkWorld toWorld): x along, z outward.
+        const angle = Math.PI - item.bearing;
+        const point = (lx: number, lz: number) => ({ x: item.x + lx * Math.cos(angle) + lz * Math.sin(angle), z: item.z - lx * Math.sin(angle) + lz * Math.cos(angle) });
+        // Just inside each face is solid; just beyond it (by more than the probe) is clear, along both local axes.
+        for (const sign of [-1, 1]) {
+          const insideX = point(sign * (size.halfX - 0.1), 0);
+          const outsideX = point(sign * (size.halfX + 0.5), 0);
+          const insideZ = point(0, sign * (size.halfZ - 0.1));
+          const outsideZ = point(0, sign * (size.halfZ + 0.5));
+          expect(world.blocked(insideX.x, insideX.z, 0.05)).toBe(true);
+          expect(world.blocked(outsideX.x, outsideX.z, 0.05)).toBe(false);
+          expect(world.blocked(insideZ.x, insideZ.z, 0.05)).toBe(true);
+          expect(world.blocked(outsideZ.x, outsideZ.z, 0.05)).toBe(false);
+        }
+      }
+    });
+  });
 });

@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { DebugView } from "@clockwork/render";
 import { CityScene, type CityMode, type Nudge } from "./CityScene";
 import { formatClock } from "./clockwork";
+import { CourierHud, playAnnouncement, shouldOpenGuideOnEsc } from "../courier/CourierHud";
+import type { CourierHud as CourierHudData } from "../courier/CourierController";
 import { DISTRICTS, districtLocation } from "./districts";
 import "./city.css";
 
@@ -29,12 +31,17 @@ export function CityGame() {
   const [debugView, setDebugView] = useState<DebugView>("final");
   const [time, setTime] = useState(() => formatClock(new Date()));
   const [error, setError] = useState("");
+  const [hud, setHud] = useState<CourierHudData | null>(null);
+  const modeRef = useRef<CityMode>("title");
+  const hudDone = hud?.task.done ?? false;
+  /** While flying with the mouse captured, Esc frees the mouse instead of opening the guide. */
+  const escOpensGuide = shouldOpenGuideOnEsc(mode, hud, guideOpen);
 
   useEffect(() => {
     if (!mount.current) return;
     let owned: CityScene;
     try {
-      owned = new CityScene(mount.current, { onPick: setFocused, onError: setError });
+      owned = new CityScene(mount.current, { onPick: setFocused, onError: setError, onCourierHud: (next) => { if (modeRef.current === "play") setHud(next); } });
       scene.current = owned;
     } catch {
       setError("This town needs WebGL2. Open it in a current desktop browser such as Chrome, Edge, Firefox or Safari.");
@@ -49,7 +56,9 @@ export function CityGame() {
   }, []);
   useEffect(() => { scene.current?.setReducedMotion(reducedMotion); }, [reducedMotion]);
   useEffect(() => { scene.current?.setDebugView(debugView); }, [debugView]);
+  useEffect(() => { modeRef.current = mode; if (mode !== "play") setHud(null); }, [mode]);
   useEffect(() => { scene.current?.setMode(mode); }, [mode]);
+  useEffect(() => { scene.current?.setCourierSuspended(mode === "play" && (guideOpen || hudDone)); }, [mode, guideOpen, hudDone]);
   useEffect(() => { if (guideOpen) guideRef.current?.focus(); }, [guideOpen]);
 
   const select = useCallback((index: number | null) => {
@@ -60,25 +69,58 @@ export function CityGame() {
   const enter = () => {
     setGuideOpen(false);
     setFocused(null);
+    setHud(null);
     setMode("explore");
     requestAnimationFrame(() => scene.current?.canvas.focus());
   };
-  const backToTitle = () => { setGuideOpen(false); setFocused(null); setMode("title"); };
-  const openGuide = () => {
+  const startRound = () => {
+    setGuideOpen(false);
+    setFocused(null);
+    setHud(null);
+    setMode("play");
+    requestAnimationFrame(() => scene.current?.canvas.focus());
+  };
+  const restartRound = () => {
+    setHud(null);
+    scene.current?.restartRound();
+    // The START AGAIN button goes with the card: give the walk keys (and Space) back to the town at once.
+    requestAnimationFrame(() => scene.current?.canvas.focus());
+  };
+  const backToTitle = () => { setGuideOpen(false); setFocused(null); setHud(null); setMode("title"); };
+  const openGuide = useCallback(() => {
     returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setGuideOpen(true);
-  };
+  }, []);
   const closeGuide = useCallback(() => {
     setGuideOpen(false);
-    returnFocus.current?.focus();
+    const target = returnFocus.current;
+    // While playing, the canvas takes the walk and flight keys; handing focus back to the GUIDE button would leave
+    // WASD and E dead until the player clicked the town.
+    if (modeRef.current === "play") scene.current?.canvas.focus();
+    else if (target?.isConnected) target.focus();
   }, []);
+  /** Keeps Tab inside the open guide. */
+  const trapTab = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Tab") return;
+    const panel = event.currentTarget;
+    const items = [...panel.querySelectorAll<HTMLElement>("button, input, select, summary")]
+      .filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (!first || !last) return;
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === panel)) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && active === last) { event.preventDefault(); first.focus(); }
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
       const typing = event.target instanceof HTMLElement && /^(INPUT|SELECT|TEXTAREA)$/.test(event.target.tagName);
       if (event.key === "Escape") {
+        if (event.repeat) return;
         if (guideOpen) closeGuide();
+        else if (mode === "play") { if (escOpensGuide) { event.preventDefault(); openGuide(); } }
         else if (mode === "explore" && focused !== null) { event.preventDefault(); select(null); }
         return;
       }
@@ -90,10 +132,12 @@ export function CityGame() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeGuide, focused, guideOpen, mode, select]);
+  }, [closeGuide, escOpensGuide, focused, guideOpen, mode, openGuide, select]);
 
   const district = focused === null ? null : DISTRICTS[focused] ?? null;
-  const announcement = mode === "title" ? "" : district ? `Now viewing ${district.name}. ${districtLocation(district)}.` : "Viewing the whole town.";
+  const announcement = mode === "title" ? "" : mode === "play"
+    ? playAnnouncement(hud)
+    : district ? `Now viewing ${district.name}. ${districtLocation(district)}.` : "Viewing the whole town.";
   const setMotion = (value: boolean) => {
     setReducedMotion(value);
     try { localStorage.setItem("clockwork-reduced-motion", String(value)); } catch { /* Storage can be disabled. */ }
@@ -111,8 +155,9 @@ export function CityGame() {
         <div className="form-heading"><span>TOWN CLOCK</span><strong className="city-time">{time}</strong></div>
         <p className="city-card-note">The tower shows your local time. Once a second, every gear in town moves one tick.</p>
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="launch" onClick={enter} disabled={!!error}>ENTER THE CITY<span aria-hidden="true">↗</span></button>
-        <small>Drag to look around. Scroll to zoom.</small>
+        <button className="launch" onClick={startRound} disabled={!!error}>START THE ROUND<span aria-hidden="true">↗</span></button>
+        <button className="look-around" onClick={enter} disabled={!!error}>LOOK AROUND</button>
+        <small>Three deliveries across the town and the sky. WASD to walk, E to act.</small>
       </div>
       <button className="title-manual" onClick={openGuide} aria-expanded={guideOpen}>GUIDE <span aria-hidden="true">↗</span></button>
       <div className="title-footer"><span>ILLUSTRATED HILL TOWN</span><span>EIGHT DISTRICTS · ONE CLOCK</span></div>
@@ -146,13 +191,24 @@ export function CityGame() {
       <div className="control-hint">DRAG TO LOOK · SCROLL TO ZOOM · ← → CIRCLE · ESC OVERVIEW</div>
     </>}
 
+    {mode === "play" && hud && <CourierHud hud={hud} time={time} guideOpen={guideOpen} onGuide={openGuide} onRestart={restartRound} onLookAround={enter} />}
+    {mode === "play" && error && <p className="center-message city-error" role="alert">{error}</p>}
+
     <div className="sr-live" aria-live="polite">{announcement}</div>
 
-    {guideOpen && <section className="settings city-guide" ref={guideRef} tabIndex={-1} aria-label="Guide">
+    {guideOpen && <section className="settings city-guide" ref={guideRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Guide" onKeyDown={trapTab}>
       <div><span>GUIDE / HILL TOWN</span><button onClick={closeGuide} aria-label="Close guide">×</button></div>
-      <h2>How to look around</h2>
+      <h2>{mode === "play" ? "How to play" : "How to look around"}</h2>
       <p>The tower clock shows your local time. Once a second, every gear, windmill and wheel in town moves one tick together.</p>
-      <dl className="controls">
+      {mode === "play" ? <dl className="controls">
+        <dt>W A S D</dt><dd>Walk</dd>
+        <dt>Shift</dt><dd>Run</dd>
+        <dt>Space</dt><dd>Jump (onto kerbs, steps and low walls)</dd>
+        <dt>E</dt><dd>Pick up, deliver, oil, launch</dd>
+        <dt>Drag</dt><dd>Look around</dd>
+        <dt>In the air</dt><dd>Mouse steers once you click, W/S throttle, Space boost, A/D bank, Esc releases the mouse</dd>
+        <dt>Esc</dt><dd>Free the mouse (in flight), or open/close this guide</dd>
+      </dl> : <dl className="controls">
         <dt>Drag / one finger</dt><dd>Look around</dd>
         <dt>Scroll / pinch</dt><dd>Zoom in and out</dd>
         <dt>Right-drag / two fingers</dt><dd>Slide the view</dd>
@@ -160,13 +216,13 @@ export function CityGame() {
         <dt>+ / −</dt><dd>Zoom with the keyboard</dd>
         <dt>Click a district</dt><dd>Fly to it</dd>
         <dt>Esc</dt><dd>Back to the whole town</dd>
-      </dl>
+      </dl>}
       <label className="checkbox"><input type="checkbox" checked={reducedMotion} onChange={(event) => setMotion(event.target.checked)} />REDUCED MOTION</label>
       <details><summary>Illustration diagnostics</summary><label>RENDER CHANNEL<select value={debugView} onChange={(event) => setDebugView(event.target.value as DebugView)}>
         <option value="final">Final illustrated view</option><option value="color">Color</option><option value="surface-id">Surface IDs</option>
         <option value="depth">Depth</option><option value="normals">Normals</option><option value="mask">Contour mask</option>
       </select></label></details>
-      {mode === "explore" && <button className="leave" onClick={backToTitle}>BACK TO TITLE</button>}
+      {mode !== "title" && <button className="leave" onClick={backToTitle}>BACK TO TITLE</button>}
     </section>}
   </main>;
 }

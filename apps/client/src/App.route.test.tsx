@@ -10,7 +10,8 @@ it("opens the illustrated hill town by default", () => {
   expect(isOnlineRoute("")).toBe(false);
   expect(isOnlineRoute("?mode=legacy-online")).toBe(true);
   const html = renderToStaticMarkup(<App search="" />);
-  expect(html).toContain("ENTER THE CITY");
+  expect(html).toContain("START THE ROUND");
+  expect(html).toContain("LOOK AROUND");
   expect(html).toContain("TOWN CLOCK");
   expect(html).not.toContain("SOLO FLIGHT");
   expect(html).not.toContain("ROOM ACCESS CODE");

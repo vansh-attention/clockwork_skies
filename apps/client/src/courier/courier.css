@@ -1,0 +1,73 @@
+/* Walking-round HUD. Tokens and panel language come from styles.css and city.css. */
+.courier-stack{z-index:2;position:absolute;top:110px;left:30px;width:268px;display:flex;flex-direction:column;gap:12px;pointer-events:none}
+.courier-panel{width:100%;color:var(--paper);background:#1e3932de;border:1px solid #efebd380;box-shadow:3px 3px 0 #1b363642;backdrop-filter:blur(5px);padding:14px 16px 16px;pointer-events:none}
+.courier-eyebrow{display:block;padding-bottom:10px;border-bottom:1px solid #e5e8c844;font-size:9px;font-weight:700;letter-spacing:.17em;color:#ffdfa1}
+.courier-panel h2{margin:12px 0 10px;font-size:30px;line-height:1.05;letter-spacing:.01em;font-weight:400}
+.courier-panel ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.courier-panel li{position:relative;padding-left:24px;font-size:12px;line-height:1.4;color:#f2ecd9b3}
+.courier-panel li::before{content:"";position:absolute;left:0;top:2px;width:12px;height:12px;border:1px solid #f2ecd980;border-radius:50%}
+.courier-panel li.current{color:var(--paper);font-weight:700}
+.courier-panel li.current::before{border-color:#ffdfa1;background:#ffdfa1}
+.courier-panel li.done{color:#9fd3b3}
+.courier-panel li.done::before{content:"✓";display:grid;place-items:center;font-size:9px;line-height:1;border-color:#5fae86;background:#28594c;color:#e8f6ec}
+.courier-ticks{font-family:Impact,'Arial Narrow',sans-serif;font-weight:400;letter-spacing:.06em;color:#ffdfa1}
+
+.courier-stack .left-instruments{position:static;top:auto;width:100%;padding:12px 15px}
+.right-instruments.courier-instruments{top:110px;right:30px;z-index:2}
+.instrument.courier-extra{display:none}
+.courier-unit,.courier-landing{font-size:9px;letter-spacing:.13em;font-weight:700;color:#f2ecd9b3}
+.courier-landing{flex-basis:100%}
+.courier-stack .instrument.too-fast strong{color:#ff9a73}
+.courier-stack .instrument.too-fast .courier-landing{color:#ffb596}
+.capture-hint.courier-steer{bottom:134px;z-index:2;pointer-events:none;padding:8px 14px;letter-spacing:.12em;font-weight:700;white-space:nowrap}
+.courier-turnback{top:134px}
+
+.courier-prompt{position:absolute;left:50%;bottom:72px;transform:translateX(-50%);display:flex;align-items:center;gap:12px;background:var(--paper);color:var(--ink);border:1px solid var(--ink);box-shadow:3px 3px 0 #263d3944;padding:9px 18px 9px 10px;font-size:12px;font-weight:700;letter-spacing:.08em;pointer-events:none;white-space:nowrap;z-index:2}
+.courier-prompt kbd{display:grid;place-items:center;min-width:28px;height:28px;padding:0 6px;font:400 17px Impact,'Arial Narrow',sans-serif;color:var(--paper);background:var(--green);border-bottom:3px solid #173a30;border-radius:3px}
+
+.courier-marker{position:absolute;width:0;height:0;pointer-events:none;z-index:1}
+.courier-marker i{position:absolute;left:-11px;top:-11px;width:22px;height:22px;background:var(--copper);border:2px solid var(--paper);box-shadow:0 0 0 1px var(--ink),2px 2px 0 #263d3955;transform:rotate(45deg)}
+.courier-marker.offscreen i{background:transparent;border:0;box-shadow:none;width:0;height:0;left:-12px;top:-14px;border-left:12px solid transparent;border-right:12px solid transparent;border-bottom:22px solid var(--copper);filter:drop-shadow(0 0 1px var(--ink)) drop-shadow(0 0 1px var(--ink));transform-origin:12px 14px}
+.courier-marker.flip span{top:auto;bottom:20px}
+.courier-marker span{position:absolute;left:0;top:20px;transform:translateX(-50%);padding:2px 7px;font-size:10px;font-weight:700;letter-spacing:.1em;white-space:nowrap;color:var(--ink);background:#f2ecd9e8}
+
+.courier-toast{position:absolute;top:92px;left:50%;transform:translateX(-50%);margin:0;max-width:calc(100% - 32px);padding:9px 20px;font-size:11px;font-weight:700;letter-spacing:.12em;line-height:1.4;text-align:center;color:#fff4da;pointer-events:none;z-index:2}
+.courier-toast:empty{padding:0;background:none;box-shadow:none;border:0}
+.courier-toast.tone-good{background:#28594c}
+.courier-toast.tone-warn{background:#9a4129}
+.courier-toast.tone-info{background:#263d39}
+
+.district-card.courier-complete{z-index:3;top:50%;bottom:auto;transform:translate(-50%,-50%);--accent:var(--green)}
+.district-card.courier-complete h2{color:var(--copper);font-size:44px;margin:0 0 4px}
+.district-card>.courier-time{margin-bottom:14px;font:400 30px Impact,'Arial Narrow',sans-serif;letter-spacing:.04em;text-transform:none;color:var(--ink);font-variant-numeric:tabular-nums}
+.courier-complete ul{list-style:none;margin:0 0 16px;padding:0}
+.courier-complete li{position:relative;padding:8px 0 8px 24px;border-top:1px solid #263d3933;font-size:12px;font-weight:700}
+.courier-complete li::before{content:"✓";position:absolute;left:0;top:8px;color:var(--green)}
+.courier-again{background:#9a4129;border-color:#9a4129;color:#fff4d8}
+.courier-again:hover{background:#7d3320}
+
+@media(max-width:960px){
+  .courier-toast{top:auto;bottom:170px;max-width:calc(100% - 32px)}
+  .courier-toast.courier-turnback{bottom:230px}
+}
+@media(max-width:700px){
+  .courier-stack{top:62px;left:12px;right:12px;width:auto;flex-direction:row;flex-wrap:wrap;gap:6px}
+  .courier-panel{flex:1 1 100%;width:auto;padding:8px 12px}
+  .right-instruments.courier-instruments{display:none}
+  .courier-stack .left-instruments{position:static;flex:1 1 100%;width:auto;min-width:0;padding:6px 10px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+  .instrument.courier-extra{display:flex}
+  .courier-stack .instrument{padding:4px 0;border:0}
+  .courier-stack .instrument.primary strong{font-size:28px}
+  .courier-stack .instrument .meter{order:3}
+  .capture-hint.courier-steer{font-size:8px}
+  .courier-eyebrow{display:inline-block;border:0;padding:0 8px 0 0}
+  .courier-panel h2{display:inline;font-size:18px;margin:0}
+  .courier-panel ol{display:block;margin-top:6px}
+  .courier-panel li{display:none;padding-left:0;font-size:11px}
+  .courier-panel li::before{display:none}
+  .courier-panel li.current{display:block}
+  .courier-toast{font-size:10px}
+  .courier-prompt{bottom:24px;font-size:11px}
+  .district-card.courier-complete{width:calc(100% - 24px);padding:16px}
+  .district-card.courier-complete h2{font-size:34px}
+}

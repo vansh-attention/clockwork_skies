@@ -1,15 +1,31 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { IllustratedComposer, type DebugView } from "@clockwork/render";
+import { IllustratedComposer, illustratedEnvironment, resetIllustratedEnvironment, type DebugView } from "@clockwork/render";
 import { buildCity, handsGeometry, type BuiltCity } from "./buildCity";
 import { anchorSwing, cycleMs, handAngles, tickValue } from "./clockwork";
 import { districtAt } from "./layout";
+import { CourierController, type CourierHud } from "../courier/CourierController";
+import { buildLanternfall, buildLaunchersAndGates } from "../courier/outpost";
+import type { Spinner } from "./buildCity";
+import { enableShadows } from "./kit";
+import { Sun } from "./sun";
+import { SKY_COLORS, Sky } from "./sky";
+import { buildAmbient, type BuiltAmbient } from "./ambient";
+import { createHillTownWalkWorld } from "../courier/walkWorld";
 
-export type CityMode = "title" | "explore";
+export type CityMode = "title" | "explore" | "play";
 export type Nudge = "left" | "right" | "up" | "down" | "in" | "out";
-export type CityDiagnostics = { mode: CityMode; focused: number | null; calls: number; triangles: number; camera: number[]; target: number[] };
-export type CitySceneOptions = { onPick: (district: number | null) => void; onError: (message: string) => void };
-type CityWindow = Window & { __CLOCKWORK_CITY__?: () => CityDiagnostics };
+export type CourierDiagnostics = { mode: "walk" | "fly"; position: number[]; taskId: string | null; stepIndex: number; done: boolean; prompt: string | null };
+export type CityDiagnostics = {
+  mode: CityMode; focused: number | null; calls: number; triangles: number; camera: number[]; target: number[]; courier: CourierDiagnostics | null;
+  /** Names of the scene's top-level parts (town, Lanternfall, launchers and gates, courier...), so tests can see what is drawn. */
+  parts: string[];
+};
+export type CitySceneOptions = { onPick: (district: number | null) => void; onError: (message: string) => void; onCourierHud?: (hud: CourierHud) => void };
+type CourierDebug = { teleportToObjective(): void };
+type CityWindow = Window & { __CLOCKWORK_CITY__?: () => CityDiagnostics; __CLOCKWORK_COURIER__?: CourierDebug };
+/** The OrbitControls settings the courier camera changes; they are put back when play ends. */
+type ControlsSettings = Pick<OrbitControls, "enablePan" | "minDistance" | "maxDistance" | "maxPolarAngle" | "autoRotate" | "enabled">;
 type Pose = { position: THREE.Vector3; target: THREE.Vector3 };
 /** Flights run on wall-clock time, so a slow frame rate never stretches them out. */
 type Flight = { from: THREE.Spherical; to: THREE.Spherical; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; startedAt: number; durationMs: number };
@@ -25,7 +41,24 @@ const OVERVIEW_POLAR = 1.08;
 const FLIGHT_PIVOT = new THREE.Vector3(0, 40, 0);
 /** On wide screens the title view slides the town right, clear of the title card. */
 const TITLE_SHIFT = -0.2;
+/** The courier HUD is republished at most this often (seconds of frame time). */
+const HUD_INTERVAL = 0.1;
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+/** Squared-exponential fog density for the illustrated materials (see @clockwork/render illustratedEnvironment). */
+const FOG_DENSITY = 0.00032;
+/** Half-size of the sun's shadow square: tight and crisp around the courier, wider in flight, the whole island otherwise. */
+const SHADOW_REACH = { walk: 90, fly: 220, town: 520 } as const;
+/** Seconds between shadow redraws when nothing but the clockwork moves. */
+const SHADOW_REFRESH = 0.1;
+/**
+ * While walking, tree canopies between the camera and the courier open a window this wide (world units, around the
+ * sight line to a point this far above the courier's feet), so leaves never fill the view.
+ */
+const SEE_THROUGH = { radius: 3.2, lift: 1.8 } as const;
+/** The ink: lines soften into the haze, take some colour from what they outline, and boil about a pixel on eights. */
+const LINE_STYLE = { fadeNear: 220, fadeFar: 2200, fadeMin: 0.35, inkTint: 0.45, grade: 1, boil: 0.9 } as const;
+/** Toward the sun: a mid-morning sun from the south-east-ish, low enough for long, graphic shadows. */
+const SUN_DIRECTION = new THREE.Vector3(0.52, 0.6, 0.6);
 
 export class CityScene {
   private readonly renderer: THREE.WebGLRenderer;
@@ -34,9 +67,18 @@ export class CityScene {
   private readonly camera = new THREE.PerspectiveCamera(34, 1, 2, 7000);
   private readonly controls: OrbitControls;
   private readonly city: BuiltCity;
+  /** Every part that turns one tick per second: the town's gears plus Lanternfall's rim gear and lamp. */
+  private readonly spinners: Spinner[];
   private readonly spinBase: number[];
   private readonly anchorBase: number;
   private readonly clock = new THREE.Clock();
+  private readonly sun = new Sun();
+  private readonly sky = new Sky();
+  private readonly ambient: BuiltAmbient;
+  private readonly focus = new THREE.Vector3();
+  private elapsed = 0;
+  private shadowAge = 0;
+  private shadowDrawn = false;
   private readonly raycaster = new THREE.Raycaster();
   private readonly debug: (() => CityDiagnostics) | null;
   private mode: CityMode = "title";
@@ -51,6 +93,10 @@ export class CityScene {
   private shift = { x: TITLE_SHIFT, y: 0 };
   private shiftTarget = { x: TITLE_SHIFT, y: 0 };
   private size = { width: 1, height: 1 };
+  private courier: CourierController | null = null;
+  private savedControls: ControlsSettings | null = null;
+  private hudElapsed = 0;
+  private courierDebug: CourierDebug | null = null;
   private pointerStart: { x: number; y: number } | null = null;
   private stats = { calls: 0, triangles: 0 };
 
@@ -61,6 +107,10 @@ export class CityScene {
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
       this.renderer.setPixelRatio(this.pixelRatio);
       this.renderer.setClearColor(0x75bdc3, 1);
+      this.renderer.shadowMap.enabled = true;
+      this.renderer.shadowMap.type = THREE.PCFShadowMap;
+      // Redrawn when something worth shadowing moves (see fitSun), not blindly every frame.
+      this.renderer.shadowMap.autoUpdate = false;
       // The composer renders twice per frame; reset by hand so the totals cover the whole frame.
       this.renderer.info.autoReset = false;
       canvas.setAttribute("aria-label", "Clockwork Skies hill town. Drag to look around; arrow keys circle the town.");
@@ -68,10 +118,26 @@ export class CityScene {
       container.appendChild(canvas);
       this.composer = new IllustratedComposer(this.renderer);
       this.composer.setThickness(1.15);
-      this.world.background = new THREE.Color(0x75bdc3);
+      // Lines soften into the distance and take some colour from what they outline; the whole image is graded.
+      this.composer.setStyle(LINE_STYLE);
+      // The painted dome is the sky; the far fog matches its horizon so distant islands melt into it.
+      this.world.add(this.sky.dome);
+      illustratedEnvironment.uFogFar.value.set(SKY_COLORS.horizon);
       this.city = buildCity();
       this.world.add(this.city.group);
-      this.spinBase = this.city.spinners.map((spinner) => spinner.object.rotation[spinner.axis]);
+      // Lanternfall, the home launcher and both landing gates share the town's palette, so they cost no new surface ids.
+      const outposts = [buildLanternfall(this.city.palette), buildLaunchersAndGates(this.city.palette)];
+      for (const outpost of outposts) this.world.add(outpost.group);
+      for (const root of [this.city.group, ...outposts.map((outpost) => outpost.group)]) enableShadows(root);
+      // Grass, pennants, birds and chimney smoke (their own shadow settings: only the pennants cast).
+      this.ambient = buildAmbient(this.city.palette, createHillTownWalkWorld());
+      this.world.add(this.ambient.group);
+      this.world.add(...this.sun.objects);
+      // Aerial perspective: barely there across the town, strong by Lanternfall (2.4 km).
+      illustratedEnvironment.uFogDensity.value = FOG_DENSITY;
+      illustratedEnvironment.uSunDirection.value.copy(SUN_DIRECTION);
+      this.spinners = [...this.city.spinners, ...outposts.flatMap((outpost) => outpost.spinners)];
+      this.spinBase = this.spinners.map((spinner) => spinner.object.rotation[spinner.axis]);
       this.anchorBase = this.city.anchor.rotation.z;
       this.camera.position.setFromSphericalCoords(TITLE_RADIUS * this.reach(), TITLE_POLAR, -0.8).add(TITLE_TARGET);
       this.controls = new OrbitControls(this.camera, canvas);
@@ -92,7 +158,11 @@ export class CityScene {
     window.addEventListener("resize", this.resize);
     document.addEventListener("visibilitychange", this.onVisibility);
     this.debug = new URLSearchParams(window.location.search).get("debug") === "1" ? () => this.diagnostics() : null;
-    if (this.debug) (window as CityWindow).__CLOCKWORK_CITY__ = this.debug;
+    if (this.debug) {
+      this.courierDebug = this.createCourierDebug();
+      (window as CityWindow).__CLOCKWORK_CITY__ = this.debug;
+      (window as CityWindow).__CLOCKWORK_COURIER__ = this.courierDebug;
+    }
     this.applyMode();
     this.resize();
     this.shift = { ...this.shiftTarget };
@@ -104,12 +174,93 @@ export class CityScene {
 
   setMode(mode: CityMode) {
     if (mode === this.mode) return;
+    const previous = this.mode;
+    const previousFocus = this.focused;
+    const leavingPlay = previous === "play";
     this.mode = mode;
     this.focused = null;
+    if (mode === "play") {
+      try {
+        this.enterPlay();
+      } catch (error) {
+        this.abandonPlay(previous, previousFocus, error);
+        return;
+      }
+      this.applyMode();
+      // The courier camera is not offset sideways, so there is no slide from the title's shifted view.
+      this.shift = { ...this.shiftTarget };
+      this.applyShift();
+      return;
+    }
+    if (leavingPlay) this.leavePlay();
     this.applyMode();
     this.flyTo(mode === "title"
       ? this.orbitPose(TITLE_RADIUS * this.reach(), TITLE_POLAR, TITLE_TARGET)
       : this.orbitPose(OVERVIEW_RADIUS * this.reach(), OVERVIEW_POLAR, OVERVIEW_TARGET));
+  }
+
+  /** Restart the round; only meaningful while playing. */
+  restartRound() {
+    if (this.mode !== "play" || !this.courier) return;
+    this.courier.start();
+    this.hudElapsed = 0;
+    this.options.onCourierHud?.(this.courier.hud());
+  }
+
+  /** Starting play threw: put the scene back as it was and tell the player. */
+  private abandonPlay(previous: CityMode, previousFocus: number | null, error: unknown) {
+    try { this.courier?.dispose(); } catch { /* the controller is being discarded */ }
+    this.courier = null;
+    if (this.savedControls) Object.assign(this.controls, this.savedControls);
+    this.savedControls = null;
+    this.mode = previous;
+    this.focused = previousFocus;
+    this.applyMode();
+    this.options.onError(`Could not start the round: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  private createCourierDebug(): CourierDebug {
+    return { teleportToObjective: () => { if (this.mode === "play") this.courier?.teleportToObjective(); } };
+  }
+
+  /** Pause or resume courier input (guide open, round complete). A no-op without a controller. */
+  setCourierSuspended(suspended: boolean): void {
+    this.courier?.setSuspended(suspended);
+  }
+
+  private enterPlay() {
+    const controls = this.controls;
+    this.flight = null;
+    this.savedControls = {
+      enablePan: controls.enablePan, minDistance: controls.minDistance, maxDistance: controls.maxDistance,
+      maxPolarAngle: controls.maxPolarAngle, autoRotate: controls.autoRotate, enabled: controls.enabled,
+    };
+    this.courier ??= new CourierController({
+      world: this.world, camera: this.camera, controls, palette: this.city.palette, canvas: this.canvas, reducedMotion: () => this.reducedMotion,
+    });
+    this.hudElapsed = 0;
+    this.courier.start();
+  }
+
+  private leavePlay() {
+    this.courier?.stop();
+    if (this.savedControls) Object.assign(this.controls, this.savedControls);
+    this.savedControls = null;
+  }
+
+  /** One frame of play: the courier moves and the camera follows; the HUD is published at most ten times a second. */
+  private stepPlay(dt: number) {
+    // The courier controller owns the camera in play (its follow camera while walking, the chase camera in flight)
+    // and switches the orbit controls off. Updating them here would fight it, and the town clamp (r 430) would drag
+    // the view off a courier standing at the launcher (r 444).
+    this.courier?.update(dt);
+    this.hudElapsed += dt;
+    if (this.hudElapsed >= HUD_INTERVAL) {
+      this.hudElapsed -= HUD_INTERVAL;
+      // A long frame must not queue a burst of publishes.
+      if (this.hudElapsed >= HUD_INTERVAL) this.hudElapsed = 0;
+      if (this.courier) this.options.onCourierHud?.(this.courier.hud());
+    }
   }
 
   /** Fly to a district, or back to the whole town with null. */
@@ -151,10 +302,23 @@ export class CityScene {
 
   diagnostics(): CityDiagnostics {
     return { mode: this.mode, focused: this.focused, calls: this.stats.calls, triangles: this.stats.triangles,
-      camera: this.camera.position.toArray(), target: this.controls.target.toArray() };
+      camera: this.camera.position.toArray(), target: this.controls.target.toArray(), courier: this.courierDiagnostics(),
+      parts: this.world.children.map((child) => child.name).filter((name) => name.length > 0) };
+  }
+
+  private courierDiagnostics(): CourierDiagnostics | null {
+    if (this.mode !== "play" || !this.courier) return null;
+    const { mode, position, task, prompt } = this.courier.snapshot();
+    return { mode, position: [position.x, position.y, position.z], taskId: task.taskId, stepIndex: task.stepIndex, done: task.done, prompt };
   }
 
   private applyMode() {
+    if (this.mode === "play") {
+      // The courier controller owns the camera and the controls while playing.
+      this.updateShiftTarget();
+      this.applyShift();
+      return;
+    }
     this.controls.enabled = this.mode === "explore";
     this.controls.autoRotate = this.mode === "title" && !this.reducedMotion;
     // The title camera stands further back than anyone may zoom out while exploring.
@@ -269,7 +433,7 @@ export class CityScene {
     if (this.reducedMotion) return;
     const cycle = cycleMs(now);
     const ticks = tickValue(cycle);
-    this.city.spinners.forEach((spinner, index) => {
+    this.spinners.forEach((spinner, index) => {
       spinner.object.rotation[spinner.axis] = (this.spinBase[index] ?? 0) + ticks * spinner.step;
     });
     this.city.anchor.rotation.z = this.anchorBase + anchorSwing(cycle);
@@ -278,7 +442,8 @@ export class CityScene {
   private animate = () => {
     this.frame = requestAnimationFrame(this.animate);
     const dt = Math.min(this.clock.getDelta(), 0.05);
-    if (this.flight) this.stepFlight(performance.now());
+    if (this.mode === "play") this.stepPlay(dt);
+    else if (this.flight) this.stepFlight(performance.now());
     else { this.controls.update(dt); if (this.mode === "explore") this.keepTargetInTown(); }
     if (this.shift.x !== this.shiftTarget.x || this.shift.y !== this.shiftTarget.y) {
       const ease = 1 - Math.exp(-5 * dt);
@@ -289,12 +454,49 @@ export class CityScene {
       this.applyShift();
     }
     this.updateClockwork(Date.now());
+    if (!this.reducedMotion) this.elapsed += dt;
+    illustratedEnvironment.uTime.value = this.elapsed;
+    this.ambient.update(this.elapsed, tickValue(cycleMs(Date.now())), this.reducedMotion);
+    this.fitSun(dt);
+    this.updateSeeThrough();
     if (!this.reducedMotion) this.city.clouds.rotation.y += dt * 0.006;
     this.renderer.info.reset();
-    this.composer.render(this.world, this.camera);
+    this.sky.update(this.camera, this.elapsed, this.pixelRatio);
+    // The scene clock stops under reduced motion, so the line boil holds still with it.
+    this.composer.setTime(this.elapsed);
+    this.composer.render(this.world, this.camera, [{ scene: this.sky.overlay, camera: this.camera }]);
     this.stats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
     this.adaptResolution(dt);
   };
+
+  /** Shadows where they matter: around the courier (or the plane) while playing, over the whole island otherwise. */
+  private fitSun(dt: number) {
+    const playing = this.mode === "play" && this.courier !== null;
+    if (playing) {
+      this.courier!.focusPoint(this.focus);
+      this.sun.follow(this.focus, this.courier!.mode === "fly" ? SHADOW_REACH.fly : SHADOW_REACH.walk);
+    } else {
+      this.sun.follow(this.focus.set(0, 0, 0), SHADOW_REACH.town);
+    }
+    // While playing the courier (or plane) moves every frame. Over the town only gears and pennants move, once a
+    // tick at most, so a few refreshes a second are plenty.
+    this.shadowAge += dt;
+    if (playing || this.shadowAge >= SHADOW_REFRESH || !this.shadowDrawn) {
+      this.renderer.shadowMap.needsUpdate = true;
+      this.shadowAge = 0;
+      this.shadowDrawn = true;
+    }
+  }
+
+  /** Point the canopies' see-through window at the walking courier; off in flight and outside play. */
+  private updateSeeThrough() {
+    const walking = this.mode === "play" && this.courier !== null && this.courier.mode === "walk";
+    illustratedEnvironment.uSeeThrough.value = walking ? SEE_THROUGH.radius : 0;
+    if (walking) {
+      this.courier!.focusPoint(illustratedEnvironment.uFocus.value);
+      illustratedEnvironment.uFocus.value.y += SEE_THROUGH.lift;
+    }
+  }
 
   private adaptResolution(dt: number) {
     this.fpsSamples.push(dt > 0 ? 1 / dt : 60);
@@ -323,6 +525,7 @@ export class CityScene {
   private onContextLost = (event: Event) => {
     event.preventDefault();
     cancelAnimationFrame(this.frame);
+    this.courier?.stop();
     this.options.onError("The graphics context was lost. Reload the page to see the town again.");
   };
 
@@ -335,18 +538,26 @@ export class CityScene {
     canvas.removeEventListener("pointerup", this.onPointerUp);
     canvas.removeEventListener("webglcontextlost", this.onContextLost);
     this.controls.removeEventListener("start", this.cancelFlight);
+    // A throwing controller must not leak the renderer, the canvas or the debug hooks below.
+    try { this.courier?.dispose(); } catch (error) { console.warn("Courier cleanup failed", error); }
+    this.courier = null;
     this.controls.dispose();
     const materials = new Set<THREE.Material>();
     this.world.traverse((object) => {
+      if (object instanceof THREE.InstancedMesh) object.dispose();
       if (!(object instanceof THREE.Mesh)) return;
       object.geometry.dispose();
       for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
     });
     materials.forEach((material) => material.dispose());
+    this.sun?.dispose();
+    this.sky?.dispose();
+    resetIllustratedEnvironment();
     this.composer.dispose();
     this.renderer.dispose();
     canvas.remove();
     const target = window as CityWindow;
     if (this.debug && target.__CLOCKWORK_CITY__ === this.debug) delete target.__CLOCKWORK_CITY__;
+    if (this.courierDebug && target.__CLOCKWORK_COURIER__ === this.courierDebug) delete target.__CLOCKWORK_COURIER__;
   }
 }
