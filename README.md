@@ -1,10 +1,14 @@
-# Clockwork Skies
+# Little London
 
-Clockwork Skies opens on an **explorable illustrated hill town**: a floating clockwork town whose tower shows your local time and whose gears all tick together once a second. Enter the city to look around its eight districts in the browser. The older multiplayer game remains at `?mode=legacy-online`; the separate first-person spacecraft slice remains at `?mode=local-space`.
+The default experience is **Little London**, a compact painted island with brick lanes, corner shops, garden squares, a winding river and three walkable bridges. Its 100 original London buildings, eight landmark places and 32 residents share one authored plan with walking and camera collision. Abeto Messenger guides the cel shading, painted materials, outlines and street-scale framing. The default scene has no clockwork tower, gears, terrace rings or sky-flight objectives.
+
+The current direction and evidence are recorded in [.claude/abeto-messenger/island-audit.md](.claude/abeto-messenger/island-audit.md). The earlier Clockwork rebuild audit is historical and has been superseded by the user's small-island direction.
+
+The older Clockwork Skies multiplayer game remains at `?mode=legacy-online`; the separate first-person spacecraft slice remains at `?mode=local-space`.
 
 The local gameplay direction and measured verification record live in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md). The older multiplayer boundary remains in [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md).
 
-## Explore the hill town locally
+## Explore London locally
 
 Requires **Node.js 24+**, npm, and a desktop browser with WebGL2.
 
@@ -13,7 +17,7 @@ npm ci
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173** and select **Enter the city**. The hill town needs no server or room code. Drag to look around, scroll to zoom, and pick one of the eight districts to fly to it; arrow keys circle the town and Esc returns to the overview. The guide has a reduced-motion setting and the illustration diagnostics. Add `?debug=1` to expose `window.__CLOCKWORK_CITY__()` with draw calls and camera state.
+Open **http://127.0.0.1:5173** and select **Take a walk**, or **View the island** for an aerial view and place selection. No server or room code is needed. WASD walks, Shift runs, Space jumps, drag looks, and scroll zooms. Escape opens the guide while walking and returns to the overview while viewing a place. The guide includes reduced motion. Add `?debug=1` for scene diagnostics; `window.render_game_to_text()` reports the player state. With the preview running, `node tools/london-visual-tour.mjs` captures all eight places, the phone title and street-level walking in `artifacts/little-london/tour/`.
 
 **Offline space slice:** open `http://127.0.0.1:5173/?mode=local-space` for training, skirmish, or keyboard flight. Its gameplay and native benchmark are documented in [docs/SPACE-GAMEPLAY.md](docs/SPACE-GAMEPLAY.md).
 

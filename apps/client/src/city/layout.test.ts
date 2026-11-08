@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CLOCKWORK_WORLD } from "@clockwork/content";
 import { DISTRICTS } from "./districts";
-import { CANAL, FURNITURE_SIZE, ISLAND_RADIUS, STAIR_BEARINGS, STREET, SUMMIT, TERRACES, angularGap, createCityLayout, createStreetFurniture, districtAt, groundHeight, polarToXZ } from "./layout";
+import { CANAL, FURNITURE_SIZE, ISLAND_RADIUS, ROAD_LIFT, STAIR_BEARINGS, STREET, SUMMIT, TERRACES, angularGap, createHillTownLayout as createCityLayout, createCityLayout as createIslandLayout, createStreetFurniture, districtAt, groundHeight, polarToXZ } from "./layout";
 import { createHillTownWalkWorld } from "../courier/walkWorld";
 
 it("builds the same town from the same seed", () => {
@@ -9,8 +9,11 @@ it("builds the same town from the same seed", () => {
   expect(createCityLayout(7)).not.toEqual(createCityLayout(8));
 });
 
-it("names one district after each landmark, in compass order", () => {
-  expect(DISTRICTS.map((district) => district.name)).toEqual(CLOCKWORK_WORLD.landmarks.map((landmark) => landmark.name));
+it("places London's eight neighbourhoods in compass order while retaining landmark identities", () => {
+  expect(DISTRICTS.map((district) => district.name)).toEqual([
+    "Regent's Park", "St Paul's", "Tower Wharf", "Battersea", "Westminster", "Kew Gardens", "Covent Garden", "Bloomsbury",
+  ]);
+  expect(DISTRICTS.map((district) => district.id)).toEqual(CLOCKWORK_WORLD.landmarks.map((landmark) => landmark.id));
   expect(DISTRICTS.map((district) => district.compass)).toEqual(["N", "NE", "E", "SE", "S", "SW", "W", "NW"]);
 });
 
@@ -49,11 +52,10 @@ it("sits every house on its own terrace, clear of walls, streets and landmarks",
 });
 
 it("assigns a clicked ground point to the district under it", () => {
-  DISTRICTS.forEach((district, index) => {
-    const point = polarToXZ(district.bearing * Math.PI / 180, 200);
+  createIslandLayout().landmarks.forEach((point, index) => {
     expect(districtAt(point.x, point.z)).toBe(index);
   });
-  expect(districtAt(0, 10)).toBeNull();
+  expect(districtAt(0, 0)).toBeNull();
 });
 
 describe("createStreetFurniture", () => {
@@ -68,18 +70,34 @@ describe("createStreetFurniture", () => {
     expect(boxes.length).toBeGreaterThan(8);
     for (const item of items) {
       expect(world.surfaceAt(item.x, item.z).walkable || Math.hypot(item.x, item.z) < SUMMIT.radius).toBe(true);
-      expect(item.y).toBeCloseTo(world.surfaceAt(item.x, item.z).height, 1);
+      const roadLift = item.kind === "bus" || item.kind === "taxi" || item.kind === "beacon" ? ROAD_LIFT : 0;
+      expect(item.y).toBeCloseTo(world.surfaceAt(item.x, item.z).height + roadLift, 5);
     }
   });
 
   it("keeps clear of stairways, bridges and landmark plazas", () => {
     for (const item of items) {
       const r = Math.hypot(item.x, item.z);
-      if (r > SUMMIT.radius) {
+      if (item.kind === "beacon") {
+        const terrace = TERRACES.find((terrace) => Math.abs(terrace.top + ROAD_LIFT - item.y) < 1e-9)!;
+        const road = terrace.radius - STREET.inset + STREET.width / 2;
+        const crossing = STAIR_BEARINGS.find((bearing) => {
+          const lateral = -item.x * Math.cos(bearing) - item.z * Math.sin(bearing);
+          const outward = item.x * Math.sin(bearing) - item.z * Math.cos(bearing);
+          return Math.abs(Math.abs(lateral) - 4.6) < 1e-6 && Math.abs(outward - road - 4.7) < 1e-6;
+        });
+        expect(crossing, "beacons must flank a real zebra crossing, outside its walking lane").toBeDefined();
+        const centre = polarToXZ(crossing!, road + 4.7);
+        expect(world.blocked(centre.x, centre.z, 1.5)).toBe(false);
+      } else if (r > SUMMIT.radius) {
         for (const stair of STAIR_BEARINGS) expect(angularGap(item.bearing, stair) * r).toBeGreaterThanOrEqual(9 - 1e-9);
       }
       for (const landmark of layout.landmarks) expect(Math.hypot(item.x - landmark.x, item.z - landmark.z)).toBeGreaterThanOrEqual(landmark.clearRadius + 3);
     }
+  });
+
+  it("places a pair of solid Belisha beacon posts at all 24 zebra crossings", () => {
+    expect(items.filter((item) => item.kind === "beacon")).toHaveLength(STAIR_BEARINGS.length * 2 * 3);
   });
 
   it("is solid to the courier", () => {

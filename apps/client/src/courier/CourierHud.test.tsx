@@ -10,11 +10,11 @@ function makeHud(patch: Partial<CourierHudData> = {}, task: Partial<CourierHudDa
     mode: "walk",
     task: {
       taskIndex: 0, stepIndex: 1, taskId: "market-parcel", title: "Market parcel",
-      stepLabel: "Deliver it to The Bell Observatory", prompt: "E · Deliver parcel",
+      stepLabel: "Deliver it to St Paul's", prompt: "E · Deliver parcel",
       target: "observatory-door", targetPosition: { x: 0, y: 0, z: 0 }, tickHits: 0, done: false, elapsedMs: 0,
       checklist: [
-        { label: "Pick up the parcel at Rivet Market", done: true, current: false },
-        { label: "Deliver it to The Bell Observatory", done: false, current: true },
+        { label: "Pick up the parcel at Covent Garden", done: true, current: false },
+        { label: "Deliver it to St Paul's", done: false, current: true },
         { label: "Walk home", done: false, current: false },
       ],
       ...task,
@@ -45,7 +45,7 @@ describe("CourierHud", () => {
     expect(html).toContain("GUIDE");
     expect(html).not.toContain('aria-live');
     expect(html).toMatch(/class="[^"]*\bdone\b[^"]*"[^>]*>(?:<[^>]+>)*Pick up the parcel/);
-    expect(html).toMatch(/aria-current="step"[^>]*>(?:<[^>]+>)*Deliver it to The Bell Observatory/);
+    expect(html).toMatch(/aria-current="step"[^>]*>(?:<[^>]+>)*Deliver it to St Paul&#x27;s/);
     expect(html).toContain("Walk home");
     expect(html).toContain("<kbd>E</kbd>");
     expect(html).toContain("Deliver parcel");
@@ -102,7 +102,7 @@ describe("CourierHud", () => {
   it("shows the tick count on the current tick step only", () => {
     const tick = makeHud({}, {
       taskIndex: 1, stepIndex: 0, taskId: "oil-escapement", tickHits: 2,
-      checklist: [{ label: "Oil The Great Escapement", done: false, current: true }],
+      checklist: [{ label: "Oil the Westminster clock", done: false, current: true }],
     });
     expect(render(tick)).toContain("2/3");
     expect(render(makeHud())).not.toContain("0/3");
@@ -257,7 +257,7 @@ describe("CourierHud", () => {
     expect(html).toContain("ROUND COMPLETE");
     expect(html).toContain("2:05");
     expect(html).toContain("Market parcel");
-    expect(html).toContain("Oil the escapement");
+    expect(html).toContain("Westminster clock");
     expect(html).toContain("Letter for Lanternfall");
     expect(html).toContain("START AGAIN");
     expect(html).toContain("LOOK AROUND");
@@ -277,7 +277,7 @@ describe("clampPercent", () => {
 
 describe("playAnnouncement", () => {
   it("is a start message before the first hud", () => expect(playAnnouncement(null)).toBe("Round started."));
-  it("reads the title and step", () => expect(playAnnouncement(makeHud())).toBe("Market parcel. Deliver it to The Bell Observatory"));
+  it("reads the title and step", () => expect(playAnnouncement(makeHud())).toBe("Market parcel. Deliver it to St Paul's"));
   it("says the round is complete", () => expect(playAnnouncement(makeHud({}, { done: true }))).toBe("Round complete."));
 });
 

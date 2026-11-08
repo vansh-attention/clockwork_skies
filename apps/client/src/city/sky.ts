@@ -9,12 +9,16 @@ import * as THREE from "three";
  * - `overlay`: a few hundred dust specks drifting in a box around the camera, drawn after the line pass so they
  *   are never outlined.
  */
+/**
+ * A turquoise sky with mint cloud: two flat tones, as the reference's sky reads (its sky about hue 177°, saturation
+ * 0.48; its lighter cloud about hue 167°, saturation 0.32, measured on its frames).
+ */
 export const SKY_COLORS = {
-  zenith: "#5c9fae",
-  horizon: "#c6ddd7",
+  zenith: "#4fb2ad",
+  horizon: "#9edbcd",
   below: "#8ec4c1",
-  cloudLight: "#f2f2ea",
-  cloudShade: "#c8d6d2",
+  cloudLight: "#b4e9db",
+  cloudShade: "#93d8ca",
   speck: "#f7f3e2",
 } as const;
 
@@ -70,10 +74,12 @@ const domeFragment = /* glsl */ `
     vec3 sky = mix(uHorizon, uZenith, smoothstep(0.0, 0.6, up));
     sky = mix(sky, uBelow, smoothstep(0.0, -0.4, up));
 
-    // Clouds on a flat ceiling: denser toward the horizon, two tones with hard (anti-aliased) edges. Computed for
-    // every sky pixel (no branch) so fwidth stays well defined; below the horizon they are masked away.
-    vec2 p = d.xz / (max(up, 0.0) + 0.2) * 1.4 + vec2(uTime * 0.012, uTime * 0.005);
-    float cover = fbm(p) - 0.58 + (1.0 - smoothstep(0.05, 0.5, up)) * 0.08;
+    // Clouds on a flat ceiling: long, brushy streaks drawn out along the wind (the noise is stretched one way and
+    // warped), denser toward the horizon, two tones with hard (anti-aliased) edges. Computed for every sky pixel (no
+    // branch) so fwidth stays well defined; below the horizon they are masked away.
+    vec2 p = d.xz / (max(up, 0.0) + 0.2) * 1.4 * vec2(0.42, 1.25) + vec2(uTime * 0.012, uTime * 0.005);
+    p += 0.45 * vec2(noise(p * 1.6 + 3.7), noise(p * 1.6 - 1.9));
+    float cover = fbm(p) - 0.56 + (1.0 - smoothstep(0.05, 0.5, up)) * 0.08;
     float edge = fwidth(cover) * 1.2 + 1e-4;
     float cloud = smoothstep(-edge, edge, cover);
     float inner = cover - 0.05 - (noise(p * 3.1 + vec2(0.4, 0.2)) - 0.5) * 0.08;

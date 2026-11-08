@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { DISTRICTS } from "../city/districts";
 import {
-  CANAL, ISLAND_RADIUS, STAIR_BEARINGS, SUMMIT, TERRACES,
-  createCityLayout, groundHeight, polarToXZ,
+  BRIDGE_BEARINGS, CANAL, ISLAND_RADIUS, STAIR_BEARINGS, SUMMIT, TERRACES, TOWER_BRIDGE,
+  createCityLayout, createHillTownLayout, createStreetFurniture, FURNITURE_SIZE, groundHeight, polarToXZ,
 } from "../city/layout";
+import { landmarkPoint } from "../city/londonSolids";
 import { createHillTownWalkWorld } from "./walkWorld";
 
-const layout = createCityLayout();
+const layout = createHillTownLayout();
 const world = createHillTownWalkWorld(layout);
 
-describe("hill town walk world", () => {
+describe("legacy hill town walk world", () => {
   it("matches groundHeight on open terrace ground", () => {
     for (const r of [60, 130, 200, 270, 400]) {
       const { x, z } = polarToXZ(0, r);
@@ -48,7 +49,7 @@ describe("hill town walk world", () => {
     const water = polarToXZ(0, (CANAL.inner + CANAL.outer) / 2);
     expect(world.surfaceAt(water.x, water.z).walkable).toBe(false);
 
-    for (const bearing of STAIR_BEARINGS) {
+    for (const bearing of BRIDGE_BEARINGS) {
       const deck = polarToXZ(bearing, (CANAL.inner + CANAL.outer) / 2);
       const surface = world.surfaceAt(deck.x, deck.z);
       expect(surface.walkable).toBe(true);
@@ -107,27 +108,59 @@ describe("hill town walk world", () => {
     expect(world.blocked(tree.x + 1.6, tree.z, 0)).toBe(false);
   });
 
-  it("blocks the escapement pier and the port gnomon, but not the port plaza", () => {
-    const escapement = layout.landmarks[DISTRICTS.findIndex((d) => d.kind === "escapement")]!;
-    const outward = polarToXZ(escapement.bearing, 1);
-    expect(world.blocked(escapement.x - outward.x * 10, escapement.z - outward.z * 10, 0.5)).toBe(true);
-
-    const port = layout.landmarks[DISTRICTS.findIndex((d) => d.kind === "port")]!;
-    expect(world.blocked(port.x, port.z + 7, 0.5)).toBe(true);
-    expect(world.blocked(port.x, port.z - 6, 0.5)).toBe(false);
+  it("blocks London's building footprints and keeps the delivery approaches clear", () => {
+    const at = (index: number, x: number, z: number) => landmarkPoint(layout.landmarks[index]!, x, z);
+    for (const [index, x, z] of [[0, 0, 0], [1, 0, -3], [2, 5.8, -14], [3, 0, 0], [4, 0, -7], [5, 18, 0], [6, 14, 0], [7, 0, 0]] as const) {
+      const point = at(index, x, z);
+      expect(world.blocked(point.x, point.z, 1.5), `landmark ${index} body`).toBe(true);
+    }
+    for (const [index, x, z] of [[1, 0, 19], [2, 0, 0], [4, 0, 9], [6, 0, 0]] as const) {
+      const point = at(index, x, z);
+      expect(world.surfaceAt(point.x, point.z).walkable).toBe(true);
+      expect(world.blocked(point.x, point.z, 1.5), `landmark ${index} delivery approach`).toBe(false);
+    }
   });
 
-  it("places landmark blockers in the local frame (+Z away from the tower)", () => {
-    const farm = layout.landmarks[DISTRICTS.findIndex((d) => d.kind === "farm")]!;
-    const a = Math.PI - farm.bearing;
-    const rot = (lx: number, lz: number) => ({
-      x: farm.x + lx * Math.cos(a) + lz * Math.sin(a),
-      z: farm.z - lx * Math.sin(a) + lz * Math.cos(a),
-    });
-    const hit = rot(15, -2);
-    expect(world.blocked(hit.x, hit.z, 0.5)).toBe(true);
-    const mirrored = rot(-15, -2);
-    expect(world.blocked(mirrored.x, mirrored.z, 0.5)).toBe(false);
+  it("leaves Tower Bridge's road and Covent Garden's central aisle open along their full lengths", () => {
+    for (let distance = -25; distance <= 25; distance += 0.5) {
+      const bridge = landmarkPoint(layout.landmarks[2]!, 0, distance);
+      expect(world.blocked(bridge.x, bridge.z, 1.5), `Tower Bridge z=${distance}`).toBe(false);
+      expect(world.surfaceAt(bridge.x, bridge.z).walkable).toBe(true);
+    }
+    for (let distance = -14; distance <= 14; distance += 0.5) {
+      const market = landmarkPoint(layout.landmarks[6]!, 0, distance);
+      expect(world.blocked(market.x, market.z, 1.5), `market aisle z=${distance}`).toBe(false);
+    }
+  });
+
+  it("uses rotated box footprints for Kew's wings and Westminster's shallow facade", () => {
+    for (const [index, hitX, hitZ, clearX, clearZ] of [[5, 18, 0, 18, -10], [4, 20, -7, 20, 9]] as const) {
+      const landmark = layout.landmarks[index]!;
+      const hit = landmarkPoint(landmark, hitX, hitZ);
+      const clear = landmarkPoint(landmark, clearX, clearZ);
+      expect(world.blocked(hit.x, hit.z, 0.5)).toBe(true);
+      expect(world.blocked(clear.x, clear.z, 0.5)).toBe(false);
+    }
+  });
+
+  it("blocks the full long side of parked London buses and taxis, leaving the pavement outside them open", () => {
+    const vehicles = createStreetFurniture(layout).filter((item) => item.kind === "bus" || item.kind === "taxi");
+    expect(vehicles.length).toBeGreaterThan(0);
+    for (const vehicle of vehicles) {
+      const size = FURNITURE_SIZE[vehicle.kind];
+      const angle = Math.PI - vehicle.bearing + (vehicle.turn ?? 0);
+      const nearEnd = { x: vehicle.x + Math.cos(angle) * (size.halfX - 0.3), z: vehicle.z - Math.sin(angle) * (size.halfX - 0.3) };
+      expect(world.blocked(nearEnd.x, nearEnd.z, 0.1)).toBe(true);
+    }
+  });
+
+  it("keeps every radial stair and canal bridge route free of London landmark and transport collisions", () => {
+    for (const bearing of STAIR_BEARINGS) {
+      for (let r = SUMMIT.radius - 8; r <= ISLAND_RADIUS - 8; r += 1) {
+        const point = polarToXZ(bearing, r);
+        expect(world.blocked(point.x, point.z, 1.5), `stair bearing ${bearing}, radius ${r}`).toBe(false);
+      }
+    }
   });
 
   it("leaves the summit plaza between the tower and the wall open", () => {
@@ -165,6 +198,22 @@ describe("hill town walk world", () => {
       }
     }
     expect(tooTall).toEqual([]);
+  });
+
+  it("places Tower Bridge over the water, with a two-unit deck and continuous ramps to both quays", () => {
+    const bridge = layout.landmarks[2]!;
+    expect(bridge.radius).toBe((CANAL.inner + CANAL.outer) / 2);
+    expect(bridge.bearing).toBe(TOWER_BRIDGE.bearing);
+    expect(world.surfaceAt(bridge.x, bridge.z)).toEqual({ height: 2, walkable: true });
+    let previous = 0;
+    for (let radius = 304; radius <= 360; radius += 0.1) {
+      const point = polarToXZ(TOWER_BRIDGE.bearing, radius);
+      const surface = world.surfaceAt(point.x, point.z);
+      expect(surface.walkable).toBe(true);
+      expect(world.blocked(point.x, point.z, 1.5)).toBe(false);
+      expect(Math.abs(surface.height - previous)).toBeLessThan(0.06);
+      previous = surface.height;
+    }
   });
 
   it("ramps each bridge down to the promenade and fences its deck with rails", () => {

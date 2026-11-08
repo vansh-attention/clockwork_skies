@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import type { Vec3 } from "@clockwork/shared";
-import { HOME_LAUNCH_SITE, createCityLayout, polarToXZ } from "../city/layout";
+import { HOME_LAUNCH_SITE, createHillTownLayout as createCityLayout, createHillTownLayout, polarToXZ } from "../city/layout";
 import { Palette, type MaterialKey, type MaterialSource } from "../city/kit";
 import {
   HOME_GATE, HOME_PAD, KEEPER_DOOR, LANTERNFALL_CENTER, LANTERNFALL_GATE, LANTERNFALL_LAYOUT, LANTERNFALL_PAD, LANTERNFALL_RADIUS,
@@ -240,14 +240,14 @@ describe("skyWorld", () => {
 
 describe("home ground", () => {
   it("leaves the home pad on walkable, unblocked ground", () => {
-    const world = createHillTownWalkWorld();
+    const world = createHillTownWalkWorld(createHillTownLayout());
     const { x, z } = HOME_PAD.position;
     expect(world.surfaceAt(x, z)).toEqual({ height: 0, walkable: true });
     expect(world.blocked(x, z, 1.5)).toBe(false);
   });
 
   describe("createHomeWalkWorld", () => {
-    const town = createHillTownWalkWorld();
+    const town = createHillTownWalkWorld(createHillTownLayout());
     const world = createHomeWalkWorld();
     const { x, z } = HOME_PAD.position;
     const forward = { x: Math.sin(HOME_PAD.yaw), z: -Math.cos(HOME_PAD.yaw) };

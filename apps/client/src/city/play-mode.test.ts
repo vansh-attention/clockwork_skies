@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CourierController, type ControlsLike } from "../courier/CourierController";
 import { illustratedEnvironment, resetIllustratedEnvironment } from "@clockwork/render";
 import { buildCity } from "./buildCity";
+import { createHillTownLayout } from "./layout";
 import { CityScene, type CityDiagnostics, type CityMode } from "./CityScene";
 
 // CityScene's constructor needs WebGL, so these tests build an instance from the prototype and assign only the fields
@@ -13,7 +14,6 @@ type Internals = {
   restartRound(): void;
   diagnostics(): CityDiagnostics;
   stepPlay(dt: number): void;
-  updateSeeThrough(): void;
   setCourierSuspended(suspended: boolean): void;
   createCourierDebug(): { teleportToObjective(): void };
   dispose(): void;
@@ -27,7 +27,7 @@ type Internals = {
   mode: CityMode;
 };
 
-const city = buildCity();
+const city = buildCity(createHillTownLayout());
 
 /** A freshly built scene's controls: the title state, which differs from explore's in enabled, maxDistance and autoRotate. */
 function fakeControls(): ControlsLike {
@@ -53,7 +53,7 @@ function setup(mode: CityMode = "explore", reducedMotion = true) {
   const scene = Object.assign(Object.create(CityScene.prototype), {
     // The controller is given the canvas for flight input; a plain event target stands in for it.
     renderer: { domElement: new EventTarget() },
-    world, camera, controls, city, mode, focused: null, flight: null, reducedMotion,
+    world, camera, controls, city, layout: createHillTownLayout(), residents: { agents: [], update: () => {}, dispose: () => {} }, mode, focused: null, flight: null, reducedMotion,
     container: { clientWidth: 1280, clientHeight: 720 },
     size: { width: 1280, height: 720 },
     shift: { x: 0.1, y: 0.1 }, shiftTarget: { x: 0.1, y: 0.1 },
@@ -257,7 +257,7 @@ describe("play mode: dispose", () => {
     const canvas = Object.assign(new EventTarget(), { remove: vi.fn() });
     Object.assign(rig.controls, { removeEventListener: vi.fn(), dispose: vi.fn() });
     Object.assign(rig.scene, {
-      renderer: { domElement: canvas, dispose: vi.fn() }, composer: { dispose: vi.fn() }, frame: 0,
+      renderer: { domElement: canvas, dispose: vi.fn() }, composer: { dispose: vi.fn() }, gradeLut: { dispose: vi.fn() }, frame: 0,
       onPointerDown: () => {}, onPointerUp: () => {}, onContextLost: () => {}, resize: () => {}, onVisibility: () => {}, cancelFlight: () => {},
     });
     return { ...rig, window };
@@ -351,30 +351,19 @@ describe("play mode: leaving during a flight", () => {
   });
 });
 
-describe("see-through canopies", () => {
+describe("solid scenery while playing", () => {
   afterEach(() => resetIllustratedEnvironment());
 
-  it("opens the canopy window around the walking courier only, and closes it outside play", () => {
+  it("never enables a sight-line cutout as the player enters or leaves walking mode", () => {
     const { scene } = setup("explore");
-    scene.updateSeeThrough();
     expect(illustratedEnvironment.uSeeThrough.value).toBe(0);
     scene.setMode("play");
     for (let frame = 0; frame < 5; frame += 1) scene.stepPlay(1 / 60);
-    scene.updateSeeThrough();
-    expect(illustratedEnvironment.uSeeThrough.value).toBeGreaterThan(2);
-    const feet = scene.courier!.focusPoint(new THREE.Vector3());
-    const focus = illustratedEnvironment.uFocus.value;
-    expect(focus.x).toBeCloseTo(feet.x, 6);
-    expect(focus.z).toBeCloseTo(feet.z, 6);
-    // Above the feet (chest height), so grass tufts in the same leaf material are never cut.
-    expect(focus.y - feet.y).toBeGreaterThan(1);
-    expect(focus.y - feet.y).toBeLessThan(3);
+    expect(illustratedEnvironment.uSeeThrough.value).toBe(0);
     // In flight there is no courier on foot to keep in view.
     vi.spyOn(scene.courier!, "mode", "get").mockReturnValue("fly");
-    scene.updateSeeThrough();
     expect(illustratedEnvironment.uSeeThrough.value).toBe(0);
     scene.setMode("explore");
-    scene.updateSeeThrough();
     expect(illustratedEnvironment.uSeeThrough.value).toBe(0);
   });
 });

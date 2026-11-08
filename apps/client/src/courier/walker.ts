@@ -9,6 +9,11 @@ export type Walker = {
   /** Facing, same convention as cameraYaw, wrapped to (−PI, PI]. */
   heading: number;
   vx: number; vz: number;
+  /**
+   * The intended velocity, which eases toward the input before the real velocity eases toward it. Two gentle stages
+   * give the soft S-shaped start and stop measured on the reference courier, rather than an instant jerk.
+   */
+  driveX: number; driveZ: number;
   speed: number;
   moving: boolean;
   /** Distance travelled so far, for leg animation. */
@@ -23,7 +28,16 @@ export type Walker = {
 };
 
 export const WALK = {
-  radius: 1.5, walkSpeed: 10, runSpeed: 18, maxStep: 1.2, accel: 10,
+  radius: 1.5, walkSpeed: 8.5, runSpeed: 11.2, maxStep: 1.2,
+  /**
+   * Response rates per second for both stages (intent, then velocity), fitted to the reference courier's live trace
+   * (movement-reference/live-timing.json) and checked against the same key sequence replayed in this game. Starts from
+   * standing reach a quarter of top speed after about 0.09 s, half after 0.16 s and 93% after 0.43 s (reference
+   * 0.07–0.10, 0.13–0.18 and 0.29–0.47 s); on release half the speed is gone after about 0.11 s and the courier stops
+   * within about 0.4 s and about a third of its height (reference 0.10–0.20 s and 0.36–0.51 s). The trace's first start
+   * began from the idle fidget and was slower; it is not a fair start.
+   */
+  accel: 10, brake: 13.5,
   /** Jump take-off speed and gravity: a hop about 1.15 high, about 0.6 s in the air. */
   jumpSpeed: 7.8, gravity: 26,
   /** Steering in the air, as a fraction of the acceleration on the ground. */
@@ -35,8 +49,6 @@ const MAX_SUBSTEPS = 30;
 const MOVING_SPEED = 0.5;
 const TURN_SHARPNESS = 12;
 const TAU = Math.PI * 2;
-const SLIDE_ANGLE = Math.PI / 18;
-const SLIDE_STEPS = 8;
 const EPSILON = 1e-9;
 
 const finiteOrZero = (value: number) => (Number.isFinite(value) ? value : 0);
@@ -54,7 +66,7 @@ export function createWalker(x: number, z: number, world: WalkWorld, heading = 0
   return {
     x, y: world.surfaceAt(x, z).height, z,
     heading: finiteOrZero(heading),
-    vx: 0, vz: 0, speed: 0, moving: false, stride: 0, acc: 0,
+    vx: 0, vz: 0, driveX: 0, driveZ: 0, speed: 0, moving: false, stride: 0, acc: 0,
     vy: 0, grounded: true, baseY: world.surfaceAt(x, z).height,
   };
 }
@@ -63,7 +75,7 @@ export function createWalker(x: number, z: number, world: WalkWorld, heading = 0
 function clearanceAt(x: number, z: number, world: WalkWorld): number {
   let low = 0;
   let high: number = WALK.radius;
-  for (let i = 0; i < 10; i += 1) {
+  for (let i = 0; i < 14; i += 1) {
     const mid = (low + high) / 2;
     if (world.blocked(x, z, mid)) high = mid;
     else low = mid;
@@ -94,9 +106,13 @@ function substep(walker: Walker, input: WalkInput, world: WalkWorld): SubstepRes
     dz /= length;
   }
   const top = input.run ? WALK.runSpeed : WALK.walkSpeed;
-  const accel = walker.grounded ? WALK.accel : WALK.accel * WALK.airControl;
-  walker.vx = damp(walker.vx, dx * top, accel, STEP);
-  walker.vz = damp(walker.vz, dz * top, accel, STEP);
+  const response = length < 1e-6 ? WALK.brake : WALK.accel;
+  const rate = walker.grounded ? response : response * WALK.airControl;
+  walker.driveX = damp(finiteOrZero(walker.driveX), dx * top, rate, STEP);
+  walker.driveZ = damp(finiteOrZero(walker.driveZ), dz * top, rate, STEP);
+  walker.vx = damp(walker.vx, walker.driveX, rate, STEP);
+  walker.vz = damp(walker.vz, walker.driveZ, rate, STEP);
+  if (length < 1e-6 && Math.hypot(walker.vx, walker.vz) < 0.025) { walker.vx = 0; walker.vz = 0; walker.driveX = 0; walker.driveZ = 0; }
 
   const free = (x: number, z: number) => world.surfaceAt(x, z).walkable && !world.blocked(x, z, WALK.radius);
   // A walker already in a bad spot may move wherever it is no more cramped than it is now, so it can escape.
@@ -121,39 +137,38 @@ function substep(walker: Walker, input: WalkInput, world: WalkWorld): SubstepRes
     nextX = walker.x + mx;
     nextZ = walker.z + mz;
   } else if (intended > 0) {
-    // Slide: rotate the move away from the wall in growing steps, scaled by cos so the
-    // component pushing into the wall shrinks. The first valid rotation wins.
-    let slid = false;
-    for (let k = 1; k <= SLIDE_STEPS && !slid; k += 1) {
-      const angle = k * SLIDE_ANGLE;
-      const scale = Math.cos(angle);
-      for (const side of [1, -1]) {
-        const s = Math.sin(side * angle);
-        const c = Math.cos(angle);
-        const rx = (mx * c - mz * s) * scale;
-        const rz = (mx * s + mz * c) * scale;
-        if (valid(walker.x + rx, walker.z + rz)) {
-          nextX = walker.x + rx;
-          nextZ = walker.z + rz;
-          const vx = walker.vx;
-          walker.vx = (vx * c - walker.vz * s) * scale;
-          walker.vz = (vx * s + walker.vz * c) * scale;
-          slid = true;
-          break;
-        }
+    // Advance to contact, then remove only inward motion. Estimating the normal from body clearance
+    // keeps arbitrary rotated walls smooth; an angular search alternated directions and speed at contact.
+    let remainingX = mx, remainingZ = mz;
+    for (let contact = 0; contact < 3; contact += 1) {
+      if (valid(nextX + remainingX, nextZ + remainingZ)) { nextX += remainingX; nextZ += remainingZ; break; }
+      let lo = 0, hi = 1;
+      for (let i = 0; i < 14; i += 1) {
+        const mid = (lo + hi) / 2;
+        if (valid(nextX + remainingX * mid, nextZ + remainingZ * mid)) lo = mid;
+        else hi = mid;
       }
-    }
-    if (!slid) {
-      if (valid(walker.x + mx, walker.z)) {
-        nextX = walker.x + mx;
-        walker.vz = 0;
-      } else if (valid(walker.x, walker.z + mz)) {
-        nextZ = walker.z + mz;
-        walker.vx = 0;
-      } else {
-        walker.vx = 0;
-        walker.vz = 0;
+      nextX += remainingX * lo; nextZ += remainingZ * lo;
+      const probe = 0.08;
+      let nx = clearanceAt(nextX + probe, nextZ, world) - clearanceAt(nextX - probe, nextZ, world);
+      let nz = clearanceAt(nextX, nextZ + probe, world) - clearanceAt(nextX, nextZ - probe, world);
+      const normalLength = Math.hypot(nx, nz);
+      if (normalLength < 1e-6) {
+        // Height discontinuities can reject a step without a horizontal solid. Stay on the valid surface.
+        if (valid(nextX + remainingX * (1 - lo), nextZ)) { nextX += remainingX * (1 - lo); walker.vz = 0; }
+        else if (valid(nextX, nextZ + remainingZ * (1 - lo))) { nextZ += remainingZ * (1 - lo); walker.vx = 0; }
+        else { walker.vx = 0; walker.vz = 0; }
+        break;
       }
+      nx /= normalLength; nz /= normalLength;
+      remainingX *= 1 - lo; remainingZ *= 1 - lo;
+      const inward = Math.min(0, remainingX * nx + remainingZ * nz);
+      remainingX -= nx * inward; remainingZ -= nz * inward;
+      const velocityInward = Math.min(0, walker.vx * nx + walker.vz * nz);
+      walker.vx -= nx * velocityInward; walker.vz -= nz * velocityInward;
+      // A tiny outward clearance prevents roundoff from treating the next tangent step as penetration.
+      if (valid(nextX + nx * 0.001, nextZ + nz * 0.001)) { nextX += nx * 0.001; nextZ += nz * 0.001; }
+      if (Math.hypot(remainingX, remainingZ) < 1e-7) break;
     }
   }
 

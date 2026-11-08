@@ -4,25 +4,28 @@ import {
   ShaderMaterial,
   UniformsLib,
   UniformsUtils,
+  Vector2,
   Vector3,
   type ColorRepresentation,
 } from "three";
 
 /**
  * "view" (the default): the classic headlight look, lit from the camera's upper right; nothing else in the scene needed.
- * "world": a sun fixed in the world, with cast shadows from a DirectionalLight and fog, all driven by the shared
- * `illustratedEnvironment` uniforms (the hill town).
+ * "world": a sun fixed in the world, with cast shadows from a DirectionalLight, a sky fill and fog, all driven by the
+ * shared `illustratedEnvironment` uniforms (the town).
  */
 export type IllustratedLighting = "view" | "world";
 
 /** Painted surface marks drawn by "world" materials (see the fragment shader's paintedMarks). */
-export type IllustratedPattern = "none" | "brick" | "slate" | "flags" | "ashlar" | "grass" | "water" | "leaves" | "hatch" | "bark";
+export type IllustratedPattern =
+  | "none" | "brick" | "slate" | "flags" | "ashlar" | "grass" | "water" | "leaves" | "hatch" | "bark" | "render" | "camo" | "tarmac";
 export const PATTERN_IDS: Readonly<Record<IllustratedPattern, number>> = {
-  none: 0, brick: 1, slate: 2, flags: 3, ashlar: 4, grass: 5, water: 6, leaves: 7, hatch: 8, bark: 9,
+  none: 0, brick: 1, slate: 2, flags: 3, ashlar: 4, grass: 5, water: 6, leaves: 7, hatch: 8, bark: 9, render: 10, camo: 11, tarmac: 12,
 };
 
 export type IllustratedMaterialOptions = {
   color: ColorRepresentation;
+  /** The colour in shade. "world" lighting derives it from `color` (see shadeOf) when left out. */
   shadow?: ColorRepresentation;
   surfaceId?: number;
   outline?: number;
@@ -33,16 +36,31 @@ export type IllustratedMaterialOptions = {
   patternColor?: ColorRepresentation;
   patternStrength?: number;
   /**
+   * "world" lighting only: the painted patches of `pattern` (worn render, bare brick, light grass, bark camouflage)
+   * count as their own surface, so the line pass inks round them as an illustrator would.
+   */
+  inkPatches?: boolean;
+  /**
    * "world" lighting only: cut away wherever this surface hides the focus (the courier) from the camera, within
    * `illustratedEnvironment.uSeeThrough` units of the sight line. Meant for tree canopies, which the follow camera may
    * look through but not stand in.
    */
   seeThrough?: boolean;
+  /**
+   * "world" lighting only: take the base colour from the geometry's `color` attribute (linear RGB) instead of `color`,
+   * and work out each vertex's shade from it. One material can then draw a whole figure in one call.
+   */
+  vertexColors?: boolean;
+  /**
+   * "world" lighting only: draw as a character. A hard light/shade cut instead of the soft one used for scenery, no
+   * glancing highlight, and line breaks that stay put on the body as it moves (they follow the bind-pose position).
+   */
+  character?: boolean;
 };
 
 /**
- * Uniforms every "world"-lit material shares by reference, so a scene sets the sun, fog, wind and time once a frame.
- * Fog is off (density 0) until a scene turns it on.
+ * Uniforms every "world"-lit material shares by reference, so a scene sets the sun, sky, fog, wind and time once a
+ * frame. Fog is off (density 0) until a scene turns it on.
  */
 export const illustratedEnvironment = {
   /** Toward the sun, world space (normalised by the shader). */
@@ -51,8 +69,16 @@ export const illustratedEnvironment = {
   uFogFar: { value: new Color("#d3e6d8") },
   /** Squared-exponential fog: fog = 1 - exp(-(density * distance)^2). */
   uFogDensity: { value: 0 },
-  /** How much shaded faces that look up catch sky light (0..1). */
-  uSkyFill: { value: 0.22 },
+  /**
+   * Light from the sky and the ground (linear RGB), added to every surface by how much it faces up or down. It lifts
+   * the shade toward the sky's colour without flattening it, as reflected light does in a painting.
+   */
+  uSkyLight: { value: new Color(0.006, 0.02, 0.04) },
+  uGroundLight: { value: new Color(0.007, 0.0065, 0.006) },
+  /** Where scenery turns from shade to light, in sun-facing amount (0..1): a soft cut, so moving shadows stay calm. */
+  uCut: { value: new Vector2(0.2, 0.4) },
+  /** A crisp highlight added (linear) where a wall catches the sun at a glancing angle against the view. */
+  uHighlight: { value: 0.075 },
   uTime: { value: 0 },
   /** Wind direction times strength: vertices with a `sway` weight move along it. */
   uWind: { value: new Vector3(0.9, 0, 0.35) },
@@ -67,46 +93,97 @@ const ENVIRONMENT_DEFAULTS = {
   fogNear: illustratedEnvironment.uFogNear.value.clone(),
   fogFar: illustratedEnvironment.uFogFar.value.clone(),
   fogDensity: illustratedEnvironment.uFogDensity.value,
-  skyFill: illustratedEnvironment.uSkyFill.value,
+  skyLight: illustratedEnvironment.uSkyLight.value.clone(),
+  groundLight: illustratedEnvironment.uGroundLight.value.clone(),
+  cut: illustratedEnvironment.uCut.value.clone(),
+  highlight: illustratedEnvironment.uHighlight.value,
   wind: illustratedEnvironment.uWind.value.clone(),
   focus: illustratedEnvironment.uFocus.value.clone(),
   seeThrough: illustratedEnvironment.uSeeThrough.value,
 };
 
-/** Put the shared environment back as it started (fog off, default sun, time 0): a scene calls this when it goes. */
+/** Put the shared environment back as it started (fog off, default sun and sky, time 0): a scene calls this when it goes. */
 export function resetIllustratedEnvironment(): void {
   illustratedEnvironment.uSunDirection.value.copy(ENVIRONMENT_DEFAULTS.sun);
   illustratedEnvironment.uFogNear.value.copy(ENVIRONMENT_DEFAULTS.fogNear);
   illustratedEnvironment.uFogFar.value.copy(ENVIRONMENT_DEFAULTS.fogFar);
   illustratedEnvironment.uFogDensity.value = ENVIRONMENT_DEFAULTS.fogDensity;
-  illustratedEnvironment.uSkyFill.value = ENVIRONMENT_DEFAULTS.skyFill;
+  illustratedEnvironment.uSkyLight.value.copy(ENVIRONMENT_DEFAULTS.skyLight);
+  illustratedEnvironment.uGroundLight.value.copy(ENVIRONMENT_DEFAULTS.groundLight);
+  illustratedEnvironment.uCut.value.copy(ENVIRONMENT_DEFAULTS.cut);
+  illustratedEnvironment.uHighlight.value = ENVIRONMENT_DEFAULTS.highlight;
   illustratedEnvironment.uWind.value.copy(ENVIRONMENT_DEFAULTS.wind);
   illustratedEnvironment.uTime.value = 0;
   illustratedEnvironment.uFocus.value.copy(ENVIRONMENT_DEFAULTS.focus);
   illustratedEnvironment.uSeeThrough.value = ENVIRONMENT_DEFAULTS.seeThrough;
 }
 
+/**
+ * The colour of a surface in shade, from its lit colour (linear RGB): the same hue nudged a little toward red-orange
+ * (−0.02 of a turn), the same saturation, half the value. Shade stays rich and coloured instead of greying out.
+ */
+export function shadeOf(color: ColorRepresentation): Color {
+  const c = new Color(color);
+  const max = Math.max(c.r, c.g, c.b);
+  const min = Math.min(c.r, c.g, c.b);
+  const delta = max - min;
+  let hue = 0;
+  if (delta > 1e-9) {
+    if (max === c.r) hue = ((c.g - c.b) / delta + 6) % 6;
+    else if (max === c.g) hue = (c.b - c.r) / delta + 2;
+    else hue = (c.r - c.g) / delta + 4;
+    hue /= 6;
+  }
+  const saturation = max > 1e-9 ? delta / max : 0;
+  return hsvToColor((hue - 0.02 + 1) % 1, saturation, max * 0.5);
+}
+
+function hsvToColor(h: number, s: number, v: number): Color {
+  const channel = (offset: number) => {
+    const p = Math.abs(((h + offset) % 1) * 6 - 3);
+    return v * (1 + s * (Math.min(1, Math.max(0, p - 1)) - 1));
+  };
+  return new Color().setRGB(channel(1), channel(2 / 3), channel(1 / 3));
+}
+
 const vertexShader = /* glsl */ `
   #include <common>
+  #include <skinning_pars_vertex>
   #ifdef ILLUSTRATED_WORLD
     #include <shadowmap_pars_vertex>
   #endif
 
   /** 0 at roots and poles, 1 at the tips of grass and the free end of a flag: how far the wind moves a vertex. */
   in float sway;
+  /** Added to the material's surface id, so one mesh can carry several outlined surfaces (a figure's clothes). */
+  in float idShift;
   uniform float uTime;
   uniform vec3 uWind;
 
   out vec3 vViewNormal;
   out vec3 vWorldNormal;
   out vec3 vWorldPosition;
+  out vec3 vBindPosition;
   out vec4 vClipPosition;
   out vec2 vUv;
+  out float vIdShift;
+  #ifdef ILLUSTRATED_VERTEX_COLORS
+    out vec3 vBaseColor;
+  #endif
 
   void main() {
     vUv = uv;
-    vec3 objectNormal = normal;
-    vec4 localPosition = vec4(position, 1.0);
+    vIdShift = idShift;
+    vBindPosition = position;
+    #ifdef ILLUSTRATED_VERTEX_COLORS
+      vBaseColor = color;
+    #endif
+    vec3 objectNormal = vec3(normal);
+    #include <skinbase_vertex>
+    #include <skinnormal_vertex>
+    vec3 transformed = vec3(position);
+    #include <skinning_vertex>
+    vec4 localPosition = vec4(transformed, 1.0);
     #ifdef USE_INSTANCING
       // As three does: undo each axis's squared scale first, so squashed instances keep true normals.
       mat3 im = mat3(instanceMatrix);
@@ -146,11 +223,15 @@ const fragmentShader = /* glsl */ `
     uniform vec3 uFogNear;
     uniform vec3 uFogFar;
     uniform float uFogDensity;
-    uniform float uSkyFill;
+    uniform vec3 uSkyLight;
+    uniform vec3 uGroundLight;
+    uniform vec2 uCut;
+    uniform float uHighlight;
     uniform float uTime;
     uniform int uPattern;
     uniform vec3 uPatternColor;
     uniform float uPatternStrength;
+    uniform float uInkPatches;
     uniform vec3 uFocus;
     uniform float uSeeThrough;
   #else
@@ -159,14 +240,20 @@ const fragmentShader = /* glsl */ `
 
   uniform vec3 uColor;
   uniform vec3 uShadow;
+  uniform float uFade;
   uniform float uSurfaceId;
   uniform float uOutline;
   uniform float uGrain;
   in vec3 vViewNormal;
   in vec3 vWorldNormal;
   in vec3 vWorldPosition;
+  in vec3 vBindPosition;
   in vec4 vClipPosition;
   in vec2 vUv;
+  in float vIdShift;
+  #ifdef ILLUSTRATED_VERTEX_COLORS
+    in vec3 vBaseColor;
+  #endif
 
   float hash31(vec3 p) {
     p = fract(p * 0.1031);
@@ -191,6 +278,27 @@ const fragmentShader = /* glsl */ `
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
+  }
+
+  vec3 rgbToHsv(vec3 c) {
+    vec4 k = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, k.wz), vec4(c.gb, k.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+  }
+
+  vec3 hsvToRgb(vec3 c) {
+    vec3 p = abs(fract(c.xxx + vec3(1.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
+  }
+
+  /** Shade from light (see shadeOf in material.ts): same hue nudged toward red-orange, same saturation, half value. */
+  vec3 shadeOf(vec3 lit) {
+    vec3 hsv = rgbToHsv(lit);
+    hsv.x = fract(hsv.x - 0.02 + 1.0);
+    hsv.z *= 0.5;
+    return hsvToRgb(hsv);
   }
 
   /** Surface coordinates in metres: across the ground for floors, along-the-wall and up for walls and roofs. */
@@ -223,29 +331,34 @@ const fragmentShader = /* glsl */ `
 
   /**
    * Painted surface marks. Returns how far to pull the colour toward the mark colour (x), a darkening toward the
-   * shadow colour (y) and a per-unit tone (z). Patterns: 1 brick, 2 slate, 3 flagstones, 4 ashlar, 5 grass,
-   * 6 water (animated), 7 leaves (animated dapples), 8 hatching (in shade), 9 bark.
+   * shadow colour (y), a per-unit tone (z) and the painted area the marks sit in (w: 0..1, inked when the material
+   * asks for it). Patterns: 1 brick, 2 slate, 3 flagstones, 4 ashlar, 5 grass, 6 water (animated), 7 leaves (animated
+   * dapples), 8 hatching (in shade), 9 bark, 10 render (stucco worn back to brick), 11 camo (plane-tree bark).
    */
-  vec3 paintedMarks(int pattern, vec3 p, vec3 n, float lit) {
+  vec4 paintedMarks(int pattern, vec3 p, vec3 n, float lit) {
     vec2 uv = surfaceUv(p, n);
     float tone = 0.0;
     // Illustrators suggest texture in patches rather than drawing every brick.
     float coverage = valueNoise(p * 0.07);
     if (pattern == 1) {
+      float area = cut(coverage, 0.4);
       float line = courses(uv, vec2(1.1, 0.5), 0.05, tone);
-      return vec3(line * cut(coverage, 0.4), 0.0, tone);
+      return vec4(line * area, 0.0, tone, area);
     }
     if (pattern == 2) {
+      float area = cut(coverage, 0.25);
       float line = courses(uv, vec2(0.95, 0.45), 0.045, tone);
-      return vec3(line * cut(coverage, 0.25), 0.0, tone);
+      return vec4(line * area, 0.0, tone, area);
     }
     if (pattern == 3) {
+      float area = cut(coverage, 0.46);
       float line = courses(uv, vec2(1.7, 1.15), 0.05, tone);
-      return vec3(line * cut(coverage, 0.46), 0.0, tone * 0.8);
+      return vec4(line * area, 0.0, tone * 0.8, area);
     }
     if (pattern == 4) {
+      float area = cut(coverage, 0.45);
       float line = courses(uv, vec2(2.3, 0.95), 0.04, tone);
-      return vec3(line * cut(coverage, 0.45), 0.0, tone * 0.6);
+      return vec4(line * area, 0.0, tone * 0.6, area);
     }
     if (pattern == 5) {
       // Two-tone sward: lighter patches with hard edges, and a scatter of short dark strokes.
@@ -253,7 +366,7 @@ const fragmentShader = /* glsl */ `
       vec2 cell = floor(p.xz / 1.3);
       vec2 local = fract(p.xz / 1.3) - 0.5 - (vec2(hash12(cell), hash12(cell + 7.1)) - 0.5) * 0.5;
       float stroke = hash12(cell + 3.3) < 0.22 ? 1.0 - smoothstep(0.05, 0.09, length(local * vec2(5.0, 1.3))) : 0.0;
-      return vec3(light * 0.55, stroke * 0.55, 0.0);
+      return vec4(light * 0.55, stroke * 0.55, 0.0, light);
     }
     if (pattern == 6) {
       // Flowing water: hard-edged light streaks and thin ripple lines that drift with the current.
@@ -264,14 +377,14 @@ const fragmentShader = /* glsl */ `
       float streak = cut(band, 0.6);
       float w = fwidth(band) * 1.5 + 0.004;
       float ripple = 1.0 - smoothstep(0.0, w, abs(band - 0.42));
-      return vec3(max(streak * 0.8, ripple * 0.55), 0.0, 0.0);
+      return vec4(max(streak * 0.8, ripple * 0.55), 0.0, 0.0, 0.0);
     }
     if (pattern == 7) {
       // Dark dapples and light flecks, drifting slowly with the breeze.
       vec3 drift = vec3(uTime * 0.12, 0.0, uTime * 0.08);
       float dapple = cut(valueNoise(p * 0.42 + drift), 0.6);
       float fleck = cut(valueNoise(p * 0.8 - drift * 1.3 + 11.0), 0.68) * lit;
-      return vec3(fleck * 0.75, dapple * 0.85, 0.0);
+      return vec4(fleck * 0.75, dapple * 0.85, 0.0, dapple);
     }
     if (pattern == 8) {
       // Diagonal hatching, only in shade and only in patches.
@@ -279,16 +392,47 @@ const fragmentShader = /* glsl */ `
       float d = min(s, 1.0 - s) * 0.9;
       float w = fwidth(d) * 0.75 + 1e-5;
       float line = 1.0 - smoothstep(0.07 - w, 0.07 + w, d);
-      return vec3(line * cut(coverage, 0.45) * (1.0 - lit), 0.0, 0.0);
+      return vec4(line * cut(coverage, 0.45) * (1.0 - lit), 0.0, 0.0, 0.0);
     }
     if (pattern == 9) {
       // A few long vertical bark strokes, wavering and broken into patches.
       float s = fract(uv.x / 0.6 + valueNoise(vec3(p.x, p.y * 0.25, p.z)) * 0.5);
       float d = min(s, 1.0 - s) * 0.6;
       float w = fwidth(d) * 0.75 + 1e-5;
-      return vec3((1.0 - smoothstep(0.045 - w, 0.045 + w, d)) * cut(valueNoise(p * 0.5), 0.45), 0.0, 0.0);
+      return vec4((1.0 - smoothstep(0.045 - w, 0.045 + w, d)) * cut(valueNoise(p * 0.5), 0.45), 0.0, 0.0, 0.0);
     }
-    return vec3(0.0);
+    if (pattern == 10) {
+      // Painted stucco worn back to the brick behind it in a few ragged patches, each with its own courses.
+      // Smaller chips high up, more wear toward the foot of the wall where it is knocked and damp.
+      float worn = valueNoise(p * 0.5 + vec3(3.1, 0.0, 7.7)) * 0.7 + valueNoise(p * 1.7) * 0.3;
+      worn += (1.0 - smoothstep(0.5, 4.0, p.y)) * 0.08;
+      float area = cut(worn, 0.76);
+      float line = courses(uv, vec2(1.1, 0.5), 0.05, tone);
+      return vec4(area * (0.82 + line * 0.18), line * area * 0.6, tone * area, area);
+    }
+    if (pattern == 12) {
+      // Tarmac: darker patched repairs in rough rectangles here and there, and a few long thin cracks.
+      vec2 grid = vec2(7.0, 4.5);
+      vec2 cell = floor(uv / grid);
+      vec2 inCell = fract(uv / grid);
+      vec2 size = vec2(0.35 + hash12(cell + 2.1) * 0.5, 0.3 + hash12(cell + 5.3) * 0.5);
+      vec2 middle = 0.5 + (vec2(hash12(cell + 7.7), hash12(cell + 9.1)) - 0.5) * (1.0 - size);
+      vec2 d = abs(inCell - middle) - size * 0.5;
+      float edge = max(d.x, d.y);
+      float aa = fwidth(edge) + 1e-4;
+      float repair = (1.0 - smoothstep(-aa, aa, edge)) * step(hash12(cell + 0.37), 0.3);
+      float vein = valueNoise(vec3(uv * 0.32, 0.0));
+      float vw = fwidth(vein) * 1.1 + 1e-4;
+      float crack = (1.0 - smoothstep(0.0, vw, abs(vein - 0.5))) * cut(valueNoise(vec3(uv * 0.11, 3.0)), 0.62);
+      return vec4(0.0, repair * 0.42 + crack * 0.4, 0.0, 0.0);
+    }
+    if (pattern == 11) {
+      // Plane-tree bark: jigsaw flakes of pale new bark on the darker old.
+      float flakes = valueNoise(vec3(p.x * 1.1, p.y * 0.45, p.z * 1.1)) * 0.7 + valueNoise(p * 2.6) * 0.3;
+      float area = cut(flakes, 0.55);
+      return vec4(area * 0.9, 0.0, 0.0, area);
+    }
+    return vec4(0.0);
   }
 
   /** The size of one pattern unit in metres: below a fraction of it per pixel the marks fade (far views stay calm). */
@@ -301,7 +445,21 @@ const fragmentShader = /* glsl */ `
     if (pattern == 6) return 4.0;
     if (pattern == 7) return 2.0;
     if (pattern == 8) return 0.9;
+    if (pattern == 10) return 1.4;
+    if (pattern == 11) return 0.9;
+    if (pattern == 12) return 3.0;
     return 0.6;
+  }
+
+  /**
+   * Where the ink may be drawn (1) or is left out (0): illustrators lift the pen now and then, so long contours break
+   * into strokes. Two noise fields multiplied give irregular gaps of a few tens of centimetres. Characters use their
+   * bind-pose position, so a gap stays on the same bit of sleeve while the arm swings.
+   */
+  float lineBreak(vec3 p, float scale, float threshold) {
+    float a = valueNoise(p * scale);
+    float b = valueNoise(p * scale * 1.7 + vec3(5.2, 1.3, 7.7));
+    return step(threshold, a * b);
   }
   #endif
 
@@ -312,64 +470,116 @@ const fragmentShader = /* glsl */ `
 
   void main() {
     vec3 viewNormal = normalize(vViewNormal);
+    float surfaceId = uSurfaceId + vIdShift;
+    float lineMask = uOutline;
     #ifdef ILLUSTRATED_WORLD
       vec3 worldNormal = normalize(vWorldNormal);
-      float light = dot(worldNormal, normalize(uSunDirection));
-    #else
-      float light = dot(viewNormal, normalize(uLightDirection));
-    #endif
+      vec3 toSun = normalize(uSunDirection);
+      float facing = dot(worldNormal, toSun);
+      #ifdef ILLUSTRATED_VERTEX_COLORS
+        vec3 base = vBaseColor;
+        vec3 shade = shadeOf(vBaseColor);
+      #else
+        vec3 base = uColor;
+        vec3 shade = uShadow;
+      #endif
 
-    // One hard cel band, anti-aliased over about a pixel.
-    float edge = max(fwidth(light), 1e-4) * 1.5;
-    float lit = smoothstep(0.08 - edge, 0.08 + edge, light);
-
-    #ifdef ILLUSTRATED_WORLD
+      // How much sun reaches the surface: its facing times the cast-shadow term.
+      float sunlight = max(facing, 0.0);
+      float castShadow = 1.0;
       #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
         if (receiveShadow) {
           DirectionalLightShadow sun = directionalLightShadows[0];
-          float shade = getShadow(directionalShadowMap[0], sun.shadowMapSize, sun.shadowIntensity, sun.shadowBias, sun.shadowRadius, vDirectionalShadowCoord[0]);
+          float shadowTerm = getShadow(directionalShadowMap[0], sun.shadowMapSize, sun.shadowIntensity, sun.shadowBias, sun.shadowRadius, vDirectionalShadowCoord[0]);
           // Fade out toward the shadow map's border, so shadows do not pop in at the edge of the fitted square.
           vec3 coord = vDirectionalShadowCoord[0].xyz / vDirectionalShadowCoord[0].w;
           float border = smoothstep(0.0, 0.08, min(min(coord.x, 1.0 - coord.x), min(coord.y, 1.0 - coord.y)));
-          shade = mix(1.0, shade, border);
-          // Cast shadows as crisp as the cel band: they are drawn, not blurred.
-          lit *= smoothstep(0.35, 0.65, shade);
+          castShadow = mix(1.0, shadowTerm, border);
         }
       #endif
-    #endif
+      sunlight *= castShadow;
 
-    // Painterly variation: broad soft blotches with a little finer mottling. Each fades out where it would be finer
-    // than a pixel (far away), so distant surfaces stay calm instead of sparkling.
-    vec3 color = mix(uShadow, uColor, lit);
-    if (uGrain > 0.0) {
+      // The cut between shade and light: soft on scenery (moving shadows and curved walls stay calm), hard on
+      // characters (they read as drawn figures against the street).
+      #ifdef ILLUSTRATED_CHARACTER
+        float aa = fwidth(sunlight) * 0.75 + 1e-4;
+        float lit = smoothstep(0.1 - aa, 0.15 + aa, sunlight);
+      #else
+        float lit = smoothstep(uCut.x, uCut.y, sunlight);
+      #endif
+      vec3 color = mix(shade, base, lit);
+
+      // Painted value patches: broad hard-edged areas a shade darker or lighter, as in a gouache wash.
       float footprint = length(fwidth(vWorldPosition));
-      float blotch = (valueNoise(vWorldPosition * 0.06) - 0.5) * (1.0 - smoothstep(4.0, 12.0, footprint));
-      float mottle = (valueNoise(vWorldPosition * 0.45) - 0.5) * (1.0 - smoothstep(0.6, 1.6, footprint));
-      color += (blotch * 0.8 + mottle * 0.35) * uGrain * 2.2;
-    }
+      if (uGrain > 0.0) {
+        float closeness = 1.0 - smoothstep(6.0, 16.0, footprint);
+        float darker = cut(valueNoise(vWorldPosition * 0.045 + vec3(1.7, 0.0, 4.1)), 0.68);
+        float lighter = cut(valueNoise(vWorldPosition * 0.08 + vec3(9.2, 3.3, 0.6)), 0.38);
+        float swing = clamp(uGrain * 2.0, 0.0, 0.14) * closeness;
+        color *= 1.0 - swing * darker * 0.9 + swing * lighter * 0.6;
+      }
 
-    #ifdef ILLUSTRATED_WORLD
+      float area = 0.0;
       if (uPattern > 0 && uPatternStrength > 0.0) {
         float cell = patternCell(uPattern);
-        float footprint = length(fwidth(vWorldPosition));
         float fade = 1.0 - smoothstep(cell * 0.08, cell * 0.28, footprint);
         // Always evaluated (the branch above depends on uniforms only): the marks take screen-space derivatives,
         // which are undefined inside a branch that differs between neighbouring pixels. Far away, fade is 0.
-        vec3 marks = paintedMarks(uPattern, vWorldPosition, worldNormal, lit) * fade;
+        vec4 marks = paintedMarks(uPattern, vWorldPosition, worldNormal, lit);
         // Marks take the light of the surface they sit on, so they never glow in shade.
-        vec3 markColor = uPatternColor * mix(uShadow / max(uColor, vec3(0.04)), vec3(1.0), lit);
-        color *= 1.0 + marks.z * 0.07;
-        color = mix(color, markColor, clamp(marks.x * uPatternStrength, 0.0, 1.0));
-        color = mix(color, uShadow * 0.88, clamp(marks.y * uPatternStrength, 0.0, 1.0));
+        vec3 markColor = uPatternColor * mix(shade / max(base, vec3(0.04)), vec3(1.0), lit);
+        color *= 1.0 + marks.z * 0.07 * fade;
+        color = mix(color, markColor, clamp(marks.x * uPatternStrength * fade, 0.0, 1.0));
+        color = mix(color, shade * 0.88, clamp(marks.y * uPatternStrength * fade, 0.0, 1.0));
+        // A area drawn as its own surface gets its own outline; it fades with the marks so far walls stay calm.
+        area = marks.w * step(0.5, fade) * uInkPatches;
       }
-      // Shaded faces that look up catch a little of the sky.
-      color += (1.0 - lit) * max(worldNormal.y, 0.0) * uSkyFill * (uColor - uShadow);
+      surfaceId += area * 0.006;
+
+      #ifndef ILLUSTRATED_CHARACTER
+        // A crisp glancing highlight where a wall faces the sun and the view looks into the light (never on floors).
+        vec3 toView = normalize(cameraPosition - vWorldPosition);
+        vec3 halfway = normalize(toSun + toView);
+        float glance = pow(1.0 - max(dot(toView, halfway), 0.0), 5.0) * sunlight * max(dot(worldNormal, halfway), 0.0);
+        float wall = clamp((0.95 - worldNormal.y) / 0.05, 0.0, 1.0);
+        color += uHighlight * smoothstep(0.03, 0.034, glance) * wall;
+        lineMask *= lineBreak(vWorldPosition, 0.55, 0.06);
+      #else
+        lineMask *= lineBreak(vBindPosition + vec3(surfaceId * 31.0), 1.8, 0.06);
+      #endif
+
+      // Sky and ground light, by how much the surface faces up.
+      color += mix(uGroundLight, uSkyLight, 0.5 + 0.5 * worldNormal.y);
+
       // Squared-exponential fog, near colour turning to the far (horizon) colour with distance.
       float depth = uFogDensity * length(vWorldPosition - cameraPosition);
       float fog = 1.0 - exp(-depth * depth);
-      color = mix(color, mix(uFogNear, uFogFar, smoothstep(0.0, 1.0, fog)), fog);
+      color = mix(color, mix(uFogNear, uFogFar, smoothstep(0.0, 0.8, fog)), fog);
+    #else
+      float light = dot(viewNormal, normalize(uLightDirection));
+      // One hard cel band, anti-aliased over about a pixel.
+      float edge = max(fwidth(light), 1e-4) * 1.5;
+      float lit = smoothstep(0.08 - edge, 0.08 + edge, light);
+      // Painterly variation: broad soft blotches with a little finer mottling. Each fades out where it would be finer
+      // than a pixel (far away), so distant surfaces stay calm instead of sparkling.
+      vec3 color = mix(uShadow, uColor, lit);
+      if (uGrain > 0.0) {
+        float footprint = length(fwidth(vWorldPosition));
+        float blotch = (valueNoise(vWorldPosition * 0.06) - 0.5) * (1.0 - smoothstep(4.0, 12.0, footprint));
+        float mottle = (valueNoise(vWorldPosition * 0.45) - 0.5) * (1.0 - smoothstep(0.6, 1.6, footprint));
+        color += (blotch * 0.8 + mottle * 0.35) * uGrain * 2.2;
+      }
     #endif
 
+    #ifdef ILLUSTRATED_CHARACTER
+      // Dissolve (0..1): a camera pinned right behind a character would see nothing but its back, so the character
+      // opens into a lattice of growing round holes (in bind-pose space, so they stay on the body) and the street
+      // shows through. Last in main, after every derivative.
+      if (uFade > 0.0) {
+        vec3 cell = mod(vBindPosition + 0.04, 0.16) - 0.08;
+        if (length(cell) / 0.08 < uFade * 1.85) discard;
+      }
+    #endif
     #ifdef ILLUSTRATED_SEE_THROUGH
       // Cut a window around the sight line from the camera to the focus (wider toward the camera, so it reads as a
       // round opening around the courier), but only above about chest height minus 0.6: canopies always start well
@@ -382,34 +592,49 @@ const fragmentShader = /* glsl */ `
       }
     #endif
     float reversedDepth = 1.0 - (0.5 * vClipPosition.z / vClipPosition.w + 0.5);
-    outColor = vec4(color, uSurfaceId);
-    outInfo = vec4(reversedDepth, encodeNormal(viewNormal), uOutline);
+    outColor = vec4(color, surfaceId);
+    outInfo = vec4(reversedDepth, encodeNormal(viewNormal), lineMask);
   }
 `;
 
-const SHARED_WORLD_UNIFORMS = ["uSunDirection", "uFogNear", "uFogFar", "uFogDensity", "uSkyFill", "uTime", "uWind", "uFocus", "uSeeThrough"] as const;
+const SHARED_WORLD_UNIFORMS = [
+  "uSunDirection", "uFogNear", "uFogFar", "uFogDensity", "uSkyLight", "uGroundLight", "uCut", "uHighlight", "uTime", "uWind",
+  "uFocus", "uSeeThrough",
+] as const;
 
 export function createIllustratedMaterial(options: IllustratedMaterialOptions) {
   const base = new Color(options.color);
-  const shadow = options.shadow ? new Color(options.shadow) : base.clone().offsetHSL(-0.02, 0.04, -0.28);
   const world = options.lighting === "world";
+  // In the world the shade follows the colour by rule (see shadeOf), unless a swatch asks for something else.
+  const shadow = options.shadow ? new Color(options.shadow) : world ? shadeOf(base) : base.clone().offsetHSL(-0.02, 0.04, -0.28);
+  const defines: Record<string, string> = {};
+  if (world) {
+    defines.ILLUSTRATED_WORLD = "";
+    if (options.seeThrough) defines.ILLUSTRATED_SEE_THROUGH = "";
+    if (options.vertexColors) defines.ILLUSTRATED_VERTEX_COLORS = "";
+    if (options.character) defines.ILLUSTRATED_CHARACTER = "";
+  }
   const material = new ShaderMaterial({
     name: "ClockworkIllustratedMaterial",
     glslVersion: GLSL3,
     lights: world,
-    defines: world ? { ILLUSTRATED_WORLD: "", ...(options.seeThrough ? { ILLUSTRATED_SEE_THROUGH: "" } : {}) } : {},
+    defines,
+    // The colour attribute is only declared (USE_COLOR) when the material asks for vertex colours.
+    vertexColors: world && options.vertexColors === true,
     uniforms: UniformsUtils.merge([
       UniformsLib.fog,
       ...(world ? [UniformsLib.lights] : []),
       {
         uColor: { value: base },
         uShadow: { value: shadow },
+        uFade: { value: 0 },
         uSurfaceId: { value: options.surfaceId ?? 0.3 },
         uOutline: { value: options.outline ?? 1 },
         uGrain: { value: options.grain ?? 0.035 },
         uPattern: { value: PATTERN_IDS[options.pattern ?? "none"] },
         uPatternColor: { value: new Color(options.patternColor ?? options.shadow ?? base) },
         uPatternStrength: { value: options.patternStrength ?? 0.7 },
+        uInkPatches: { value: options.inkPatches ? 1 : 0 },
         uLightDirection: { value: { x: 0.45, y: 0.76, z: 0.47 } },
         uTime: { value: 0 },
         uWind: { value: new Vector3() },
@@ -420,9 +645,11 @@ export function createIllustratedMaterial(options: IllustratedMaterialOptions) {
     vertexShader,
     fragmentShader,
   });
-  // Geometry without a `sway` attribute (nearly everything) reads 0 and stays still.
-  // (three's types list only colour and uv, but the renderer reads this map for any attribute the geometry lacks.)
-  (material.defaultAttributeValues as Record<string, number[]>).sway = [0];
+  // Geometry without a `sway` or `idShift` attribute (nearly everything) reads 0: it stays still and keeps the
+  // material's surface id. (three's types list only colour and uv, but the renderer reads this map for any attribute.)
+  const defaults = material.defaultAttributeValues as Record<string, number[]>;
+  defaults.sway = [0];
+  defaults.idShift = [0];
   if (world) for (const name of SHARED_WORLD_UNIFORMS) material.uniforms[name] = illustratedEnvironment[name];
   return material;
 }

@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { App, isOnlineRoute, isSpaceRoute } from "./App";
 
-it("opens the illustrated hill town by default", () => {
+it("opens Little London island by default", () => {
   expect(isSpaceRoute("")).toBe(false);
   expect(isSpaceRoute("?mode=skirmish")).toBe(false);
   expect(isSpaceRoute("?mode=legacy-online")).toBe(false);
@@ -10,9 +10,9 @@ it("opens the illustrated hill town by default", () => {
   expect(isOnlineRoute("")).toBe(false);
   expect(isOnlineRoute("?mode=legacy-online")).toBe(true);
   const html = renderToStaticMarkup(<App search="" />);
-  expect(html).toContain("START THE ROUND");
-  expect(html).toContain("LOOK AROUND");
-  expect(html).toContain("TOWN CLOCK");
+  expect(html).toContain("TAKE A WALK");
+  expect(html).toContain("VIEW THE ISLAND");
+  expect(html).not.toContain("CLOCKWORK");
   expect(html).not.toContain("SOLO FLIGHT");
   expect(html).not.toContain("ROOM ACCESS CODE");
   expect(html).not.toContain("Launch training");

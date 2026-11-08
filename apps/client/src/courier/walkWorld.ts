@@ -1,6 +1,8 @@
-import { DISTRICTS, type DistrictKind } from "../city/districts";
+import { riverAt } from "../city/londonPlan";
+import { DISTRICTS } from "../city/districts";
+import { getLandmarkSolids, landmarkPoint } from "../city/londonSolids";
 import {
-  CANAL, ISLAND_RADIUS, STAIR_BEARINGS, TERRACES,
+  BRIDGE_BEARINGS, CANAL, ISLAND_RADIUS, ROAD_LIFT, TERRACES, TOWER_BRIDGE,
   FURNITURE_SIZE, angularGap, bearingOf, createCityLayout, createStreetFurniture, groundHeight,
   type CityLayout, type House,
 } from "../city/layout";
@@ -32,36 +34,10 @@ const TREE_TRUNK_RADIUS = 1.5;
 const HOUSE_BUCKETS = 64;
 
 type Circle = { x: number; z: number; r: number };
-/** Axis-aligned rectangle in island coordinates, by half extents. */
-type Rect = { x: number; z: number; halfX: number; halfZ: number };
 /** A box turned like kit `frame` at `bearing` (local +X along the street, +Z away from the tower). */
 type TurnedBox = { x: number; z: number; cos: number; sin: number; halfX: number; halfZ: number };
 type Flight = { bearing: number; wall: number; end: number; upper: number; lower: number };
 type Bucketed = { house: House; sin: number; cos: number };
-
-/** [local x along the street, local z away from the tower, radius] per landmark kind. */
-const BLOCKERS: Record<DistrictKind, ReadonlyArray<readonly [number, number, number]>> = {
-  windpumps: [[-18, 4, 6], [0, -6, 6], [18, 4, 6]],
-  observatory: [[0, 0, 17], [-21, 6, 6]],
-  port: [],
-  workshops: [[-16, -4, 9], [0, 4, 9], [16, -4, 9]],
-  escapement: [[0, -10, 8], ...[-12, -6, 0, 6, 12].map((x) => [x, 0, 2.5] as const)],
-  farm: [[15, -2, 8]],
-  market: [-15, -5, 5, 15].flatMap((x) => [-6, 6].map((z) => [x, z, 3.5] as const)),
-  orchard: [
-    [0, 0, 6.5],
-    ...[-18, -6, 6, 18].flatMap((x) =>
-      [-10, 0, 10].filter((z) => !(z === 0 && Math.abs(x) === 6)).map((z) => [x, z, 1.4] as const)),
-  ],
-};
-
-/** Landmark local frame to world: rotation about Y by PI - bearing (three.js convention). */
-function toWorld(landmark: { x: number; z: number; bearing: number }, lx: number, lz: number) {
-  const angle = Math.PI - landmark.bearing;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  return { x: landmark.x + lx * cos + lz * sin, z: landmark.z - lx * sin + lz * cos };
-}
 
 function buildFlights(layout: CityLayout): Flight[] {
   const flights: Flight[] = [];
@@ -84,6 +60,7 @@ function buildFlights(layout: CityLayout): Flight[] {
 }
 
 export function createHillTownWalkWorld(layout: CityLayout = createCityLayout()): WalkWorld {
+  if (layout.plan) return createLondonWalkWorld(layout);
   const flights = buildFlights(layout);
 
   const circles: Circle[] = layout.trees.map((tree) => ({ x: tree.x, z: tree.z, r: TREE_TRUNK_RADIUS }));
@@ -92,16 +69,23 @@ export function createHillTownWalkWorld(layout: CityLayout = createCityLayout())
   for (const item of createStreetFurniture(layout)) {
     const size = FURNITURE_SIZE[item.kind];
     if (size.round) circles.push({ x: item.x, z: item.z, r: size.halfX });
-    else turned.push({ x: item.x, z: item.z, cos: Math.cos(Math.PI - item.bearing), sin: Math.sin(Math.PI - item.bearing), halfX: size.halfX, halfZ: size.halfZ });
+    else turned.push({ x: item.x, z: item.z, cos: Math.cos(Math.PI - item.bearing + (item.turn ?? 0)), sin: Math.sin(Math.PI - item.bearing + (item.turn ?? 0)), halfX: size.halfX, halfZ: size.halfZ });
   }
-  const rects: Rect[] = [];
   for (const landmark of layout.landmarks) {
     const kind = DISTRICTS[landmark.district]?.kind;
     if (!kind) continue;
-    for (const [lx, lz, r] of BLOCKERS[kind]) circles.push({ ...toWorld(landmark, lx, lz), r });
-    // The sundial gnomon is a 1.2-wide blade along world z, from the landmark's z + 7 (tall end) north to z − 7;
-    // its low northern tip is ankle height, so only z − 5 … z + 7 blocks.
-    if (kind === "port") rects.push({ x: landmark.x, z: landmark.z + 1, halfX: 0.6, halfZ: 6 });
+    for (const solid of getLandmarkSolids(kind, landmark)) {
+      if ("col" in solid) {
+        const [lx, lz, r, bottom, top] = solid.col;
+        if (bottom > 2.5 || top <= 1.2) continue;
+        circles.push({ ...landmarkPoint(landmark, lx, lz), r });
+      } else {
+        const [lx, lz, halfX, halfZ, bottom, top] = solid.box;
+        if (bottom > 2.5 || top <= 1.2) continue;
+        const angle = landmark.rotation ?? Math.PI - landmark.bearing;
+        turned.push({ ...landmarkPoint(landmark, lx, lz), cos: Math.cos(angle), sin: Math.sin(angle), halfX, halfZ });
+      }
+    }
   }
 
   const buckets: Bucketed[][] = Array.from({ length: HOUSE_BUCKETS }, () => []);
@@ -113,13 +97,13 @@ export function createHillTownWalkWorld(layout: CityLayout = createCityLayout())
   }
 
   /** Distance across the nearest stair/bridge bearing, in units of arc at radius r. */
-  const lateralToStair = (bearing: number, r: number) => {
+  const lateralToBridge = (bearing: number, r: number) => {
     let best = Infinity;
-    for (const stairBearing of STAIR_BEARINGS) best = Math.min(best, angularGap(bearing, stairBearing) * r);
+    for (const bridgeBearing of BRIDGE_BEARINGS) best = Math.min(best, angularGap(bearing, bridgeBearing) * r);
     return best;
   };
   const onBridge = (bearing: number, r: number) =>
-    r >= BRIDGE.inner && r <= BRIDGE.outer && lateralToStair(bearing, r) <= BRIDGE.halfWidth;
+    r >= BRIDGE.inner && r <= BRIDGE.outer && lateralToBridge(bearing, r) <= BRIDGE.halfWidth;
 
   function surfaceAt(x: number, z: number): Surface {
     if (!Number.isFinite(x) || !Number.isFinite(z)) return { height: 0, walkable: false };
@@ -128,7 +112,12 @@ export function createHillTownWalkWorld(layout: CityLayout = createCityLayout())
     const bearing = bearingOf(x, z);
 
     // The deck ramps down over its last few units so the walker can step off onto the promenade.
-    if (onBridge(bearing, r)) return { height: BRIDGE.deck * Math.min(1, (BRIDGE.outer - r) / BRIDGE.ramp), walkable: true };
+    if (onBridge(bearing, r)) {
+      // The original eight bridges meet stair flights on the inner bank. Tower Bridge meets flat quay paving,
+      // so it has a second, matching ramp there instead of an unwalkable two-unit lip.
+      const innerRamp = angularGap(bearing, TOWER_BRIDGE.bearing) * r <= BRIDGE.halfWidth ? (r - BRIDGE.inner) / BRIDGE.ramp : 1;
+      return { height: BRIDGE.deck * Math.min(1, innerRamp, (BRIDGE.outer - r) / BRIDGE.ramp), walkable: true };
+    }
     if (r >= CANAL.inner && r <= CANAL.outer) return { height: 0, walkable: false };
 
     for (const flight of flights) {
@@ -169,7 +158,7 @@ export function createHillTownWalkWorld(layout: CityLayout = createCityLayout())
     const nearBridgeSpan = r + radius > BRIDGE.inner && r - radius < BRIDGE.outer - BRIDGE.ramp;
     const nearCanal = r + radius > CANAL.inner && r - radius < CANAL.outer;
     if (nearBridgeSpan || nearCanal) {
-      const lateral = lateralToStair(bearingOf(x, z), r);
+      const lateral = lateralToBridge(bearingOf(x, z), r);
       // Brass rails run along both edges of each bridge deck (before its ramp).
       if (nearBridgeSpan && Math.abs(lateral - BRIDGE.rail) < BRIDGE.railHalf + radius) return true;
       // Off the bridge, the body may not hang over the canal.
@@ -181,9 +170,6 @@ export function createHillTownWalkWorld(layout: CityLayout = createCityLayout())
       const dz = z - circle.z;
       if (dx * dx + dz * dz < reach * reach) return true;
     }
-    for (const rect of rects) {
-      if (Math.abs(x - rect.x) < rect.halfX + radius && Math.abs(z - rect.z) < rect.halfZ + radius) return true;
-    }
     for (const box of turned) {
       // Into the box's own frame (the inverse of walkWorld toWorld / kit frame).
       const dx = x - box.x;
@@ -193,5 +179,107 @@ export function createHillTownWalkWorld(layout: CityLayout = createCityLayout())
     return blockedByHouse(x, z, radius, r);
   }
 
+  return { surfaceAt, blocked };
+}
+
+/**
+ * Flat London: authored street blocks and a winding Thames, with bridge rectangles rather than radial terraces.
+ * River distance is exact to the centre-line polyline: the courier's whole body stays on a quay or inside a bridge.
+ */
+export function createLondonWalkWorld(layout: CityLayout): WalkWorld {
+  const plan = layout.plan!;
+  if (!plan) throw new TypeError("createLondonWalkWorld requires an authored London plan");
+  type Obstacle = { kind: "circle"; x: number; z: number; r: number } | { kind: "box"; x: number; z: number; cos: number; sin: number; halfX: number; halfZ: number };
+  const obstacles: Obstacle[] = [];
+  const addBox = (x: number, z: number, halfX: number, halfZ: number, rotation: number) => {
+    obstacles.push({ kind: "box", x, z, halfX, halfZ, cos: Math.cos(rotation), sin: Math.sin(rotation) });
+  };
+  for (const house of layout.houses) addBox(house.x, house.z, house.width / 2, house.depth / 2, house.rotation ?? Math.PI - house.theta);
+  for (const tree of layout.trees) obstacles.push({ kind: "circle", x: tree.x, z: tree.z, r: TREE_TRUNK_RADIUS });
+  for (const item of createStreetFurniture(layout)) {
+    const size = FURNITURE_SIZE[item.kind];
+    if (size.round) obstacles.push({ kind: "circle", x: item.x, z: item.z, r: size.halfX });
+    else addBox(item.x, item.z, size.halfX, size.halfZ, (item.rotation ?? Math.PI - item.bearing) + (item.turn ?? 0));
+  }
+  for (const landmark of layout.landmarks) {
+    const kind = DISTRICTS[landmark.district]?.kind;
+    if (!kind) continue;
+    for (const solid of getLandmarkSolids(kind, landmark)) {
+      if ("col" in solid) {
+        const [x, z, r, bottom, top] = solid.col;
+        if (landmark.y + bottom > 2.5 || landmark.y + top <= 0.1) continue;
+        obstacles.push({ kind: "circle", ...landmarkPoint(landmark, x, z), r });
+      } else {
+        const [x, z, halfX, halfZ, bottom, top] = solid.box;
+        if (landmark.y + bottom > 2.5 || landmark.y + top <= 0.1) continue;
+        const position = landmarkPoint(landmark, x, z);
+        addBox(position.x, position.z, halfX, halfZ, landmark.rotation ?? Math.PI - landmark.bearing);
+      }
+    }
+  }
+  // Every bridge's low side rail is solid even on the dry approach, so a courier cannot step off its sides.
+  for (const bridge of plan.bridges) for (const side of [-1, 1]) {
+    const lateral = side * (bridge.width / 2 - 0.2);
+    addBox(bridge.x + Math.sin(bridge.rotation) * lateral, bridge.z + Math.cos(bridge.rotation) * lateral,
+      bridge.length / 2, 0.15, bridge.rotation);
+  }
+  const cellSize = 24;
+  const grid = new Map<number, Obstacle[]>();
+  const key = (x: number, z: number) => (x + 64) * 128 + z + 64;
+  for (const obstacle of obstacles) {
+    const reach = obstacle.kind === "circle" ? obstacle.r : Math.hypot(obstacle.halfX, obstacle.halfZ);
+    for (let x = Math.floor((obstacle.x - reach) / cellSize); x <= Math.floor((obstacle.x + reach) / cellSize); x += 1) {
+      for (let z = Math.floor((obstacle.z - reach) / cellSize); z <= Math.floor((obstacle.z + reach) / cellSize); z += 1) {
+        const id = key(x, z);
+        const bucket = grid.get(id);
+        if (bucket) bucket.push(obstacle); else grid.set(id, [obstacle]);
+      }
+    }
+  }
+  const bridgeCoordinates = (bridge: typeof plan.bridges[number], x: number, z: number) => {
+    const dx = x - bridge.x;
+    const dz = z - bridge.z;
+    return { along: dx * Math.cos(bridge.rotation) - dz * Math.sin(bridge.rotation), across: dx * Math.sin(bridge.rotation) + dz * Math.cos(bridge.rotation) };
+  };
+  function surfaceAt(x: number, z: number): Surface {
+    if (!Number.isFinite(x) || !Number.isFinite(z) || Math.hypot(x, z) > plan.radius - RIM_MARGIN) return { height: 0, walkable: false };
+    for (const bridge of plan.bridges) {
+      const point = bridgeCoordinates(bridge, x, z);
+      if (Math.abs(point.along) <= bridge.length / 2 && Math.abs(point.across) <= bridge.width / 2) return { height: ROAD_LIFT, walkable: true };
+    }
+    if (riverAt(x, z, plan).distance <= plan.river.halfWidth) return { height: -3, walkable: false };
+    return { height: 0, walkable: true };
+  }
+  function blocked(x: number, z: number, radius: number): boolean {
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(radius) || radius < 0) return true;
+    if (Math.hypot(x, z) + radius > plan.radius - RIM_MARGIN) return true;
+    if (riverAt(x, z, plan).distance <= plan.river.halfWidth + radius) {
+      const supported = plan.bridges.some((bridge) => {
+        const point = bridgeCoordinates(bridge, x, z);
+        return Math.abs(point.along) + radius <= bridge.length / 2 && Math.abs(point.across) + radius <= bridge.width / 2 - 0.35;
+      });
+      if (!supported) return true;
+    }
+    const checked = new Set<Obstacle>();
+    for (let gx = Math.floor((x - radius) / cellSize); gx <= Math.floor((x + radius) / cellSize); gx += 1) {
+      for (let gz = Math.floor((z - radius) / cellSize); gz <= Math.floor((z + radius) / cellSize); gz += 1) {
+        for (const obstacle of grid.get(key(gx, gz)) ?? []) {
+          if (checked.has(obstacle)) continue;
+          checked.add(obstacle);
+          const dx = x - obstacle.x;
+          const dz = z - obstacle.z;
+          if (obstacle.kind === "circle") {
+            if (dx * dx + dz * dz < (obstacle.r + radius) ** 2) return true;
+          } else {
+            const lx = Math.abs(dx * obstacle.cos - dz * obstacle.sin);
+            const lz = Math.abs(dx * obstacle.sin + dz * obstacle.cos);
+            if (radius === 0 ? lx < obstacle.halfX && lz < obstacle.halfZ
+              : Math.max(0, lx - obstacle.halfX) ** 2 + Math.max(0, lz - obstacle.halfZ) ** 2 < radius * radius) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
   return { surfaceAt, blocked };
 }

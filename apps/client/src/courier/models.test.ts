@@ -4,8 +4,10 @@ import { buildCity } from "../city/buildCity";
 import { Palette } from "../city/kit";
 import { animateBeacon, animateCourier, createBeacon, createCourierModel, disposeModel } from "./models";
 import { createGait, createPose, gaitPose, updateGait } from "./gait";
+import { createFigurePose, poseFigure } from "./figure";
+import { createHumanGait, humanPose, updateHumanGait } from "./humanGait";
 
-const ALLOWED = ["wall0", "copper", "ink", "accent2", "brass"] as const;
+const ALLOWED = ["wall0", "copper", "ink", "water", "brass"] as const;
 
 function setup() {
   const palette = new Palette((i) => ["#c45f45", "#e1a74f", "#4f9184"][i]);
@@ -100,6 +102,152 @@ describe("createCourierModel", () => {
     expect(rig.legs[1].thigh.position.x).toBeGreaterThan(0);
     expect(rig.arms[0].position.x).toBeLessThan(0);
     expect(rig.arms[1].position.x).toBeGreaterThan(0);
+  });
+});
+
+describe("human London courier", () => {
+  const model = () => createCourierModel(setup().spy, true);
+  /** The figure's vertices where its bones put them now (skinned, in the model's space). */
+  const skinned = (mesh: THREE.SkinnedMesh, filter: (i: number) => boolean = () => true) => {
+    mesh.updateMatrixWorld(true);
+    mesh.skeleton.update();
+    const position = mesh.geometry.getAttribute("position");
+    const out: THREE.Vector3[] = [];
+    for (let i = 0; i < position.count; i += 1) {
+      if (!filter(i)) continue;
+      const v = new THREE.Vector3().fromBufferAttribute(position, i);
+      mesh.applyBoneTransform(i, v);
+      out.push(v.applyMatrix4(mesh.matrixWorld));
+    }
+    return out;
+  };
+  const garment = (mesh: THREE.SkinnedMesh) => {
+    const shift = mesh.geometry.getAttribute("idShift");
+    const base = Math.min(...Array.from(shift.array as Float32Array));
+    const step = 0.0062;
+    return (i: number) => Math.round((shift.getX(i) - base) / step);
+  };
+  const SHOES = 7, STRAP = 9;
+
+  it("is one skinned, outlined person with an adult's proportions, not a toy's", () => {
+    const { group, figure, key } = model();
+    expect(figure).toBeDefined();
+    const meshes = meshesOf(group);
+    expect(meshes).toHaveLength(1);
+    const mesh = meshes[0] as THREE.SkinnedMesh;
+    expect(mesh).toBeInstanceOf(THREE.SkinnedMesh);
+    const material = mesh.material as THREE.ShaderMaterial;
+    expect(Object.keys(material.defines ?? {})).toEqual(expect.arrayContaining(["ILLUSTRATED_CHARACTER", "ILLUSTRATED_VERTEX_COLORS", "ILLUSTRATED_WORLD"]));
+    expect(material.fragmentShader).toContain("location = 1");
+    const points = skinned(mesh);
+    const bounds = new THREE.Box3().setFromPoints(points);
+    const height = bounds.max.y - bounds.min.y;
+    expect(height).toBeGreaterThan(3.7);
+    expect(height).toBeLessThan(3.95);
+    expect(Math.abs(bounds.min.y)).toBeLessThan(0.02);
+    // About 5.7 heads tall (chin to the cap's crown), with legs half the height: a person, not a chibi figure.
+    const chin = 3.15;
+    expect((bounds.max.y - chin) / height).toBeGreaterThan(0.15);
+    expect((bounds.max.y - chin) / height).toBeLessThan(0.2);
+    expect(figure!.bones.thigh[0].getWorldPosition(new THREE.Vector3()).y / height).toBeGreaterThan(0.45);
+    // Each garment is its own outlined surface; the whole person stays a modest mesh.
+    expect(new Set(Array.from(mesh.geometry.getAttribute("idShift").array as Float32Array)).size).toBeGreaterThanOrEqual(10);
+    expect((mesh.geometry.getIndex()?.count ?? 0) / 3).toBeLessThan(12000);
+    expect(key.visible).toBe(false);
+    expect(group.getObjectByName("boiler")).toBeUndefined();
+  });
+
+  it("bends smoothly at the joints: weights sum to one and blend across knees and elbows", () => {
+    const mesh = meshesOf(model().group)[0] as THREE.SkinnedMesh;
+    const weights = mesh.geometry.getAttribute("skinWeight");
+    let blended = 0;
+    for (let i = 0; i < weights.count; i += 1) {
+      const sum = weights.getX(i) + weights.getY(i) + weights.getZ(i) + weights.getW(i);
+      expect(sum).toBeCloseTo(1, 5);
+      if (weights.getX(i) > 0.05 && weights.getY(i) > 0.05) blended += 1;
+    }
+    expect(blended).toBeGreaterThan(150);
+  });
+
+  it("keeps its soles on the ground through walking, jogging and running, and lifts them in the swing", () => {
+    const { group, figure } = model();
+    const mesh = figure!.mesh;
+    const isShoe = garment(mesh);
+    for (const speed of [2.2, 8.5, 11.2]) {
+      const gait = createHumanGait();
+      let lowestEver = Infinity, highestSupport = -Infinity, highestSwing = -Infinity;
+      for (let frame = 0; frame < 180; frame += 1) {
+        updateHumanGait(gait, { dt: 1 / 60, distance: speed / 60, speed, heading: 0, y: 0, reduced: false });
+        poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
+        if (frame < 120 || frame % 4) continue;
+        group.updateMatrixWorld(true);
+        const soles = [0, 1].map((side) => {
+          const points = skinned(mesh, (i) => isShoe(i) === SHOES && Math.sign(mesh.geometry.getAttribute("position").getX(i)) === (side ? 1 : -1));
+          return Math.min(...points.map((p) => p.y));
+        });
+        lowestEver = Math.min(lowestEver, ...soles);
+        highestSupport = Math.max(highestSupport, Math.min(...soles));
+        highestSwing = Math.max(highestSwing, Math.max(...soles));
+      }
+      expect(lowestEver, `speed ${speed}`).toBeGreaterThan(-0.06);
+      // Walking, a foot is always down; jogging and running float only briefly, a hand's breadth at most.
+      expect(highestSupport, `speed ${speed}`).toBeLessThan(speed < 3 ? 0.06 : 0.3);
+      expect(highestSwing, `speed ${speed}`).toBeGreaterThan(speed < 3 ? 0.15 : 0.3);
+    }
+  });
+
+  it("swings each arm forward with the opposite leg", () => {
+    const { figure } = model();
+    const gait = createHumanGait();
+    for (let i = 0; i < 120; i += 1) updateHumanGait(gait, { dt: 1 / 60, distance: 8.5 / 60, speed: 8.5, heading: 0, y: 0, reduced: false });
+    // Late in the left leg's swing it reaches forward while the right leg pushes back.
+    gait.phase = 0.82;
+    poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
+    figure!.group.updateMatrixWorld(true);
+    const z = (bone: THREE.Object3D) => bone.getWorldPosition(new THREE.Vector3()).z;
+    // Forward is -Z: the left foot leads, so the right hand does.
+    expect(z(figure!.bones.foot[0])).toBeLessThan(z(figure!.bones.foot[1]) - 0.8);
+    expect(z(figure!.bones.hand[1])).toBeLessThan(z(figure!.bones.hand[0]) - 0.3);
+  });
+
+  it("wears its satchel strap outside the jacket, across the chest and the back", () => {
+    const { figure } = model();
+    const mesh = figure!.mesh;
+    mesh.updateMatrixWorld(true);
+    const isGarment = garment(mesh);
+    const index = mesh.geometry.getIndex()!;
+    for (const side of [-1, 1]) for (const [x, y] of [[0.05, 2.75], [-0.18, 2.4]]) {
+      const ray = new THREE.Raycaster(new THREE.Vector3(x, y, side * 3), new THREE.Vector3(0, 0, -side));
+      const hit = ray.intersectObject(mesh)[0];
+      expect(hit, `${side} ${x},${y}`).toBeDefined();
+      expect(isGarment(index.getX(hit!.faceIndex! * 3)), `${side} ${x},${y}`).toBe(STRAP);
+    }
+  });
+
+  it("holds one calm pose under reduced motion", () => {
+    const { figure } = model();
+    const gait = createHumanGait();
+    const bones = () => {
+      figure!.group.updateMatrixWorld(true);
+      return figure!.mesh.skeleton.bones.map((bone) => bone.matrixWorld.elements.map((e) => e.toFixed(6)).join(","));
+    };
+    updateHumanGait(gait, { dt: 1 / 60, distance: 0.2, speed: 12, heading: 0, y: 0, reduced: true });
+    poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
+    const before = bones();
+    for (let i = 0; i < 90; i += 1) updateHumanGait(gait, { dt: 1 / 60, distance: 0.2, speed: 12, heading: i * 0.01, y: 0, reduced: true });
+    poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
+    expect(bones()).toEqual(before);
+  });
+
+  it("disposes its own figure material and bones, never the shared palette", () => {
+    const { palette, spy } = setup();
+    const { group, figure } = createCourierModel(spy, true);
+    const material = figure!.mesh.material as THREE.Material;
+    let disposed = 0;
+    material.addEventListener("dispose", () => { disposed += 1; });
+    disposeModel(group);
+    expect(disposed).toBe(1);
+    expect(palette.get("ink").userData.ownedByModel).toBeUndefined();
   });
 });
 

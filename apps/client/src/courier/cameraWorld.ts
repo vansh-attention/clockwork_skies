@@ -1,7 +1,10 @@
 import type { Vec3 } from "@clockwork/shared";
-import { DISTRICTS, type DistrictKind } from "../city/districts";
+import { DISTRICTS } from "../city/districts";
+import { getLandmarkSolids, landmarkPoint } from "../city/londonSolids";
 import type { HouseSpec } from "../city/kit";
-import { FURNITURE_SIZE, ISLAND_RADIUS, SUMMIT, createCityLayout, createStreetFurniture, polarToXZ, type CityLayout } from "../city/layout";
+import { hasLondonShopAwning } from "../city/londonDetails";
+import { FURNITURE_SIZE, ISLAND_RADIUS, SUMMIT, TAXI_ROOF, createCityLayout, createStreetFurniture, polarToXZ, type CityLayout } from "../city/layout";
+import { planeTreeCrown } from "../city/kit";
 import type { WalkWorld } from "./walkWorld";
 
 /**
@@ -12,8 +15,8 @@ import type { WalkWorld } from "./walkWorld";
 export type CameraWorld = {
   /**
    * How far (0..1) along the segment `from` → `to` the camera may go: up to the last clear sample before the first
-   * hard occluder (ground, walls, roofs, trunks, columns), then back out of any soft one (a tree canopy: the view may
-   * pass through leaves, but the camera must not sit inside them). 1 when nothing is in the way. The first
+   * opaque occluder (ground, walls, roofs, trunks, columns or tree canopies). Stopping before the first canopy
+   * keeps opaque leaves out of the full sight line, even when the intended endpoint lies beyond them. The first
    * `ignoreNear` units are not tested.
    */
   clearFraction(from: Readonly<Vec3>, to: Readonly<Vec3>, ignoreNear?: number): number;
@@ -23,8 +26,8 @@ export type CameraWorld = {
 
 type Box = { kind: "box"; x: number; z: number; cos: number; sin: number; halfX: number; halfZ: number; bottom: number; top: number };
 type Column = { kind: "column"; x: number; z: number; r: number; bottom: number; top: number };
-/** A tree canopy: soft (see clearFraction). */
-type Ball = { kind: "ball"; x: number; y: number; z: number; r: number };
+/** An opaque tree canopy, round or (with `ry`) squashed into an ellipsoid; skipped only when it contains the subject. */
+type Ball = { kind: "ball"; x: number; y: number; z: number; r: number; ry?: number };
 type Shape = Box | Column | Ball;
 
 export type CameraWorldParts = {
@@ -37,9 +40,9 @@ export type CameraWorldParts = {
   trees?: readonly TreeVolume[];
   columns?: readonly Omit<Column, "kind">[];
 };
-export type HouseVolume = { x: number; z: number; theta: number; y: number; width: number; depth: number; height: number };
+export type HouseVolume = { x: number; z: number; theta: number; rotation?: number; y: number; width: number; depth: number; height: number };
 export type TreeVolume = { x: number; y: number; z: number; height: number; round: boolean };
-export type BoxVolume = { x: number; z: number; theta: number; halfX: number; halfZ: number; bottom: number; top: number };
+export type BoxVolume = { x: number; z: number; theta: number; rotation?: number; halfX: number; halfZ: number; bottom: number; top: number };
 
 const CELL = 20;
 /** Sample spacing along the segment; thinner than any wall, trunk or canopy. */
@@ -54,7 +57,7 @@ const roofHeightOf = (depth: number) => Math.min(7, Math.max(4.5, depth * 0.55))
 
 function houseBox(house: HouseVolume): Box {
   // The house frame is rotated by PI - bearing about Y (kit `frame`): local +X runs along the street.
-  const angle = Math.PI - house.theta;
+  const angle = house.rotation ?? Math.PI - house.theta;
   return {
     kind: "box", x: house.x, z: house.z, cos: Math.cos(angle), sin: Math.sin(angle),
     halfX: house.width / 2 + HOUSE_PAD, halfZ: house.depth / 2 + HOUSE_PAD,
@@ -63,23 +66,32 @@ function houseBox(house: HouseVolume): Box {
 }
 
 function treeShapes(tree: TreeVolume): Shape[] {
-  // Mirrors addTree: a 5-tall trunk and a canopy (round: icosahedron r = 0.33h at 4 + 0.3h; else a cone 0.32h wide, h tall).
-  const canopy: Ball = tree.round
-    ? { kind: "ball", x: tree.x, y: tree.y + 4 + tree.height * 0.3, z: tree.z, r: tree.height * 0.33 + 0.5 }
-    : { kind: "ball", x: tree.x, y: tree.y + 4 + tree.height * 0.45, z: tree.z, r: tree.height * 0.36 + 0.5 };
-  return [canopy, { kind: "column", x: tree.x, z: tree.z, r: 1.6, bottom: tree.y - 1, top: tree.y + 5.5 }];
+  // Mirrors kit addTree. A round tree is a London plane: a tall clear trunk under a crown (planeTreeCrown, the same
+  // numbers the geometry uses), so a street-level camera passes under it. A fir is a 5.5-tall trunk under its cones.
+  if (tree.round) {
+    const crown = planeTreeCrown(tree.height);
+    return [
+      { kind: "ball", x: tree.x, y: tree.y + crown.centre, z: tree.z, r: crown.radius, ry: crown.halfHeight },
+      { kind: "column", x: tree.x, z: tree.z, r: 1.6, bottom: tree.y - 1, top: tree.y + crown.trunkTop + 0.5 },
+    ];
+  }
+  return [
+    { kind: "ball", x: tree.x, y: tree.y + 4 + tree.height * 0.45, z: tree.z, r: tree.height * 0.36 + 0.5 },
+    { kind: "column", x: tree.x, z: tree.z, r: 1.6, bottom: tree.y - 1, top: tree.y + 5.5 },
+  ];
 }
 
 function radiusOf(shape: Shape): number {
-  return shape.kind === "box" ? Math.hypot(shape.halfX, shape.halfZ) : shape.r;
+  if (shape.kind === "box") return Math.hypot(shape.halfX, shape.halfZ);
+  return shape.kind === "ball" ? Math.max(shape.r, shape.ry ?? shape.r) : shape.r;
 }
 
 function inside(shape: Shape, x: number, y: number, z: number): boolean {
   if (shape.kind === "ball") {
-    const dx = x - shape.x;
-    const dy = y - shape.y;
-    const dz = z - shape.z;
-    return dx * dx + dy * dy + dz * dz < shape.r * shape.r;
+    const dx = (x - shape.x) / shape.r;
+    const dy = (y - shape.y) / (shape.ry ?? shape.r);
+    const dz = (z - shape.z) / shape.r;
+    return dx * dx + dy * dy + dz * dz < 1;
   }
   if (y < shape.bottom || y > shape.top) return false;
   const dx = x - shape.x;
@@ -95,7 +107,7 @@ export function createCameraWorld(parts: CameraWorldParts): CameraWorld {
   const shapes: Shape[] = [
     ...(parts.houses ?? []).map(houseBox),
     ...(parts.boxes ?? []).map((box): Box => {
-      const angle = Math.PI - box.theta;
+      const angle = box.rotation ?? Math.PI - box.theta;
       return { kind: "box", x: box.x, z: box.z, cos: Math.cos(angle), sin: Math.sin(angle), halfX: box.halfX, halfZ: box.halfZ, bottom: box.bottom, top: box.top };
     }),
     ...(parts.trees ?? []).flatMap(treeShapes),
@@ -117,21 +129,21 @@ export function createCameraWorld(parts: CameraWorldParts): CameraWorld {
   const rim = parts.islandRadius;
 
   /**
-   * Hard occluders at a point; or, with `soft`, a canopy at the point. Either way a canopy or a column that also holds
-   * `origin` (the courier's head) is skipped: columns stand in roughly for landmarks whose plazas the courier walks
-   * into, and a shape the courier is standing in cannot be what hides it (counting it would collapse the camera).
+   * Opaque occluders at a point. A canopy or column containing `origin` (the courier's head) is skipped: columns
+   * stand in for landmark volumes, and a shape the courier already stands inside cannot hide it without collapsing
+   * the camera. Other canopies remain solid along the whole sight line.
    */
-  function blocked(x: number, y: number, z: number, soft: boolean, origin?: Readonly<Vec3>): boolean {
-    if (!soft && Math.hypot(x, z) <= rim) {
+  function blocked(x: number, y: number, z: number, origin?: Readonly<Vec3>): boolean {
+    if (Math.hypot(x, z) <= rim) {
       const ground = parts.ground.surfaceAt(x, z).height;
       if (Number.isFinite(ground) && y < ground + GROUND_CLEARANCE) return true;
     }
     const cell = grid.get(key(Math.floor(x / CELL), Math.floor(z / CELL)));
     if (!cell) return false;
     for (const shape of cell) {
-      if ((shape.kind === "ball") !== soft || !inside(shape, x, y, z)) continue;
+      if (!inside(shape, x, y, z)) continue;
       // Standing under a canopy (or in a landmark's column), the camera may share it rather than collapse onto the courier.
-      if ((soft || shape.kind === "column") && origin && inside(shape, origin.x, origin.y, origin.z)) continue;
+      if ((shape.kind === "ball" || shape.kind === "column") && origin && inside(shape, origin.x, origin.y, origin.z)) continue;
       return true;
     }
     return false;
@@ -152,46 +164,16 @@ export function createCameraWorld(parts: CameraWorldParts): CameraWorld {
       const samples = Math.min(MAX_SAMPLES, Math.ceil(length / SAMPLE));
       const start = Math.max(0, Math.min(1, ignoreNear / length));
       const step = (1 - start) / samples;
-      // Out along the line of sight until a hard occluder...
-      let reach = 1;
+      // Stop at the first opaque surface, including leaves. Checking only whether the endpoint is in a canopy
+      // would allow an opaque tree (or overlapping trees) to sit between a clear endpoint and the courier.
       for (let i = 1; i <= samples; i += 1) {
         const t = start + step * i;
-        if (blocked(from.x + dx * t, from.y + dy * t, from.z + dz * t, false, from)) { reach = t - step; break; }
+        if (blocked(from.x + dx * t, from.y + dy * t, from.z + dz * t, from)) return Math.max(start, t - step);
       }
-      // ...then back in until the camera is out of the leaves.
-      let t = reach;
-      while (t > start && blocked(from.x + dx * t, from.y + dy * t, from.z + dz * t, true, from)) t -= step;
-      return Math.max(start, t);
+      return 1;
     },
   };
 }
-
-/**
- * What is solid in each kind of landmark (buildCity buildLandmark), in the landmark's frame (x along the street, z away
- * from the tower; heights above its ground): `col` [x, z, r, top] for round parts, `box` [x, z, halfX, halfZ, bottom,
- * top] for the rest. Each sits inside the walk world's blockers for that landmark (walkWorld BLOCKERS) plus the
- * courier's radius, so the courier can never stand inside one; open plazas (the market's aisles, the port) stay open
- * to the camera. Thin animated parts (rotors, the escapement wheel) are slabs in their own plane.
- */
-type Solid = { col: readonly [number, number, number, number] } | { box: readonly [number, number, number, number, number, number] };
-const LANDMARK_SOLIDS: Record<DistrictKind, readonly Solid[]> = {
-  windpumps: [-18, 0, 18].flatMap((x, i) => {
-    const z = i === 1 ? -6 : 4;
-    return [{ box: [x, z, 5, 5, 0, 11.5] }, { box: [x, z, 1.8, 1.8, 0, 41] }, { box: [x, z + 2.4, 15, 1, 27, 57] }] as Solid[];
-  }),
-  observatory: [{ col: [0, 0, 16.4, 29.5] }, { box: [0, 8, 2.7, 9.5, 12, 35] }, { box: [-21, 6, 4.5, 4.5, 0, 13.5] }],
-  port: [],
-  workshops: ([[-16, -4], [0, 4], [16, -4]] as const).flatMap(([x, z]) => [
-    { box: [x, z, 7.3, 6.7, 0, 12.6] }, { box: [x + 5, z - 3, 2.3, 2.3, 0, 26] },
-  ] as Solid[]),
-  escapement: [{ box: [0, -10, 6, 4.5, 0, 44] }, { box: [0, -6, 1.2, 1.2, 0, 74] }, { box: [0, 0, 28, 1.6, 6, 62] }],
-  farm: [{ box: [15, -2, 5.9, 5.7, 0, 21] }],
-  market: [-15, -5, 5, 15].flatMap((x) => [-6, 6].map((z): Solid => ({ box: [x, z, 3.8, 2.7, 0, 9] }))),
-  orchard: [
-    { col: [0, 0, 6.4, 11.4] },
-    ...[-18, -6, 6, 18].flatMap((x) => [-10, 0, 10].filter((z) => !(z === 0 && Math.abs(x) === 6)).map((z): Solid => ({ col: [x, z, 1.2, 6] }))),
-  ],
-};
 
 function landmarkSolids(layout: CityLayout): { boxes: BoxVolume[]; columns: Omit<Column, "kind">[] } {
   const boxes: BoxVolume[] = [];
@@ -199,17 +181,13 @@ function landmarkSolids(layout: CityLayout): { boxes: BoxVolume[]; columns: Omit
   for (const landmark of layout.landmarks) {
     const kind = DISTRICTS[landmark.district]?.kind;
     if (!kind) continue;
-    const angle = Math.PI - landmark.bearing;
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    const world = (lx: number, lz: number) => ({ x: landmark.x + lx * cos + lz * sin, z: landmark.z - lx * sin + lz * cos });
-    for (const solid of LANDMARK_SOLIDS[kind]) {
+    for (const solid of getLandmarkSolids(kind, landmark)) {
       if ("col" in solid) {
-        const [lx, lz, r, top] = solid.col;
-        columns.push({ ...world(lx, lz), r, bottom: landmark.y - 1, top: landmark.y + top });
+        const [lx, lz, r, bottom, top] = solid.col;
+        columns.push({ ...landmarkPoint(landmark, lx, lz), r, bottom: landmark.y + bottom - (bottom === 0 ? 1 : 0), top: landmark.y + top });
       } else {
         const [lx, lz, halfX, halfZ, bottom, top] = solid.box;
-        boxes.push({ ...world(lx, lz), theta: landmark.bearing, halfX, halfZ, bottom: landmark.y + bottom - (bottom === 0 ? 1 : 0), top: landmark.y + top });
+        boxes.push({ ...landmarkPoint(landmark, lx, lz), theta: landmark.bearing, rotation: landmark.rotation, halfX, halfZ, bottom: landmark.y + bottom - (bottom === 0 ? 1 : 0), top: landmark.y + top });
       }
     }
   }
@@ -234,21 +212,48 @@ export function createHomeCameraWorld(
   layout: CityLayout = createCityLayout(),
   boxes: readonly BoxVolume[] = [],
 ): CameraWorld {
-  // Market stalls and telephone kiosks stand taller than the camera's lowest swoop: it must not pass through them.
-  const furniture = createStreetFurniture(layout)
-    .filter((item) => item.kind === "stall" || item.kind === "kiosk")
+  // Tall street furniture and vehicles must also stop a low follow-camera swoop.
+  const streetFurniture = createStreetFurniture(layout);
+  const furniture = streetFurniture
+    .filter((item) => item.kind === "stall" || item.kind === "kiosk" || item.kind === "bus" || item.kind === "taxi")
     .map((item): BoxVolume => {
       const size = FURNITURE_SIZE[item.kind];
-      return { x: item.x, z: item.z, theta: item.bearing, halfX: size.halfX + 0.3, halfZ: size.halfZ + 0.3, bottom: item.y - 1, top: item.y + size.height + 0.3 };
+      // Padded round the sides but not above, and a cab only as tall as its drawn body (its small roof sign aside):
+      // from anywhere the courier can stand beside a cab, the sight line from its eyes rises over that roof, and a
+      // camera looking over a parked cab must not be pulled in against the courier's back.
+      const top = item.kind === "taxi" ? TAXI_ROOF : size.height;
+      return { x: item.x, z: item.z, theta: item.bearing - (item.turn ?? 0), rotation: item.rotation !== undefined ? item.rotation + (item.turn ?? 0) : undefined, halfX: size.halfX + 0.3, halfZ: size.halfZ + 0.3, bottom: item.y - 1, top: item.y + top };
     });
+  // Bus-stop heads are wider than their posts. Keep the low pole narrow so a high enamel sign does not create
+  // an invisible shoulder-height wall, and give the head its own elevated envelope.
+  const stops = streetFurniture.filter((item) => item.kind === "bus-stop");
+  const stopHeads: BoxVolume[] = stops.map((item) => ({
+    x: item.x, z: item.z, theta: item.bearing - (item.turn ?? 0), rotation: item.rotation !== undefined ? item.rotation + (item.turn ?? 0) : undefined, halfX: 0.8, halfZ: 0.2,
+    bottom: item.y + 4, top: item.y + 5.6,
+  }));
+  const stopPosts = stops.map((item) => ({ x: item.x, z: item.z, r: 0.18, bottom: item.y - 1, top: item.y + 4.8 }));
+  const beacons = streetFurniture.filter((item) => item.kind === "beacon");
+  const beaconPosts = beacons.map((item) => ({ x: item.x, z: item.z, r: 0.14, bottom: item.y - 0.05, top: item.y + 4.1 }));
+  const beaconGlobes = beacons.map((item) => ({ x: item.x, z: item.z, r: 0.4, bottom: item.y + 3.8, top: item.y + 4.6 }));
+  const awnings: BoxVolume[] = layout.houses.flatMap((house, index) => {
+    if (!hasLondonShopAwning(house, index)) return [];
+    const position = landmarkPoint({ x: house.x, z: house.z, bearing: house.theta, rotation: house.rotation }, 0, house.depth / 2 + 1.3);
+    return [{ ...position, theta: house.theta, rotation: house.rotation, halfX: (house.width + 0.6) / 2, halfZ: 1,
+      bottom: house.y + 3.65, top: house.y + 4.25 }];
+  });
+  const bridgeRails: BoxVolume[] = (layout.plan?.bridges ?? []).flatMap((bridge) => [-1, 1].map((side) => {
+    const lateral = side * (bridge.width / 2 - 0.2);
+    return { x: bridge.x + Math.sin(bridge.rotation) * lateral, z: bridge.z + Math.cos(bridge.rotation) * lateral,
+      theta: 0, rotation: bridge.rotation, halfX: bridge.length / 2, halfZ: 0.15, bottom: 0, top: 2.2 };
+  }));
   const landmarks = landmarkSolids(layout);
   return createCameraWorld({
     ground,
-    islandRadius: ISLAND_RADIUS,
+    islandRadius: layout.plan?.radius ?? ISLAND_RADIUS,
     houses: layout.houses,
-    boxes: [...boxes, ...TOWER_BOXES, ...furniture, ...landmarks.boxes],
+    boxes: [...boxes, ...(layout.plan ? [] : TOWER_BOXES), ...furniture, ...stopHeads, ...awnings, ...bridgeRails, ...landmarks.boxes],
     trees: layout.trees,
-    columns: landmarks.columns,
+    columns: [...landmarks.columns, ...stopPosts, ...beaconPosts, ...beaconGlobes],
   });
 }
 

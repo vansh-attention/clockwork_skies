@@ -24,6 +24,8 @@ export type GaitInput = {
   reduced: boolean;
   /** Off the ground (mid-jump): the legs tuck, the arms rise and the stride holds. */
   airborne?: boolean;
+  /** The compact courier takes relaxed, rounded steps; the legacy wind-up rig retains its original cadence. */
+  compact?: boolean;
 };
 
 export type LegPose = { hip: number; knee: number };
@@ -123,7 +125,8 @@ export function updateGait(gait: Gait, input: GaitInput): void {
   gait.move = lerpFPS(gait.move, fit(speed, 0.4, WALK.walkSpeed * 0.6, 0, 1), 0.15, dt);
   gait.run = lerpFPS(gait.run, fit(speed, WALK.walkSpeed, WALK.runSpeed, 0, 1), 0.1, dt);
   // The stride holds in the air, so the feet come down where they left off.
-  gait.phase = (gait.phase + ((distance * (1 - gait.air)) / lerp(WALK_CYCLE, RUN_CYCLE, gait.run)) * TAU) % TAU;
+  const cycle = input.compact ? lerp(5.5, 6.6, gait.run) : lerp(WALK_CYCLE, RUN_CYCLE, gait.run);
+  gait.phase = (gait.phase + ((distance * (1 - gait.air)) / cycle) * TAU) % TAU;
 
   // Lean forward with speed, more while speeding up, less while slowing.
   const accel = (speed - gait.lastSpeed) / dt;
@@ -185,8 +188,9 @@ export function gaitPose(gait: Gait, out: CourierPose = createPose()): CourierPo
   left.hip = sin * legSwing;
   right.hip = -sin * legSwing;
   // The knee folds while its leg swings forward (the derivative of the hip angle is positive).
-  left.knee = -kneeBend * Math.max(0, cos) - kneeBase;
-  right.knee = -kneeBend * Math.max(0, -cos) - kneeBase;
+  const lift = (amount: number) => { const t = Math.max(0, amount); return t * t * (3 - 2 * t); };
+  left.knee = -kneeBend * lift(cos) - kneeBase;
+  right.knee = -kneeBend * lift(-cos) - kneeBase;
 
   const armSwing = lerp(0.45, 0.85, run) * move;
   leftArm.swing = -sin * armSwing;

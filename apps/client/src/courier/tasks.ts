@@ -23,22 +23,22 @@ export const TASKS: readonly TaskDef[] = [
     id: "market-parcel",
     title: "Market parcel",
     steps: [
-      { kind: "pickup", anchor: "market-parcel", label: "Pick up the parcel at Rivet Market", prompt: "E · Pick up parcel" },
-      { kind: "deliver", anchor: "observatory-door", label: "Deliver it to The Bell Observatory", prompt: "E · Deliver parcel" },
+      { kind: "pickup", anchor: "market-parcel", label: "Pick up the parcel at Covent Garden", prompt: "E · Pick up parcel" },
+      { kind: "deliver", anchor: "observatory-door", label: "Deliver it to St Paul's", prompt: "E · Deliver parcel" },
     ],
   },
   {
     id: "oil-escapement",
-    title: "Oil the escapement",
+    title: "Westminster clock",
     steps: [
-      { kind: "tick", anchor: "escapement", label: "Oil The Great Escapement in time with the tick", prompt: "E · Oil on the tick" },
+      { kind: "tick", anchor: "escapement", label: "Oil the Westminster clock in time with the tick", prompt: "E · Oil on the tick" },
     ],
   },
   {
     id: "lanternfall-letter",
     title: "Letter for Lanternfall",
     steps: [
-      { kind: "pickup", anchor: "port-letter", label: "Collect the letter at Sundial Port", prompt: "E · Collect letter" },
+      { kind: "pickup", anchor: "port-letter", label: "Collect the letter at Tower Wharf", prompt: "E · Collect letter" },
       { kind: "launch", anchor: "home-launcher", label: "Launch from the spring launcher on the east rim", prompt: "E · Launch" },
       { kind: "land", anchor: "lanternfall-gate", label: "Fly slowly through Lanternfall's landing gate", prompt: null },
       { kind: "deliver", anchor: "keeper-door", label: "Deliver the letter to the lighthouse keeper", prompt: "E · Deliver letter" },

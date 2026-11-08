@@ -35,13 +35,14 @@ export class FrameDriver {
 }
 
 export class FixedClock {
+  constructor(private readonly maxSteps: number = RULES.maxSteps) {}
   private accumulated = 0;
   dropped = 0;
   step(rawSeconds: number, tick: (dt: number) => void): number {
     this.accumulated += Math.max(0, Number.isFinite(rawSeconds) ? rawSeconds : 0);
     const dt = 1 / RULES.hz;
     let steps = 0;
-    while (this.accumulated + 1e-10 >= dt && steps < RULES.maxSteps) {
+    while (this.accumulated + 1e-10 >= dt && steps < this.maxSteps) {
       tick(dt); this.accumulated -= dt; steps++;
     }
     if (this.accumulated >= dt) {

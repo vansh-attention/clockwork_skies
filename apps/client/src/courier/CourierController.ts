@@ -4,12 +4,14 @@ import type { Vec3 } from "@clockwork/shared";
 import { enableShadows, type MaterialSource } from "../city/kit";
 import { cycleMs, tickValue } from "../city/clockwork";
 import { DISTRICTS } from "../city/districts";
-import { createCityLayout, polarToXZ, type CityLayout } from "../city/layout";
+import { createCityLayout, createHillTownLayout, polarToXZ, type CityLayout } from "../city/layout";
 import { fitIndicator } from "../hudMarker";
 import { createPlaneModel } from "../planeModel";
 import { FixedClock } from "../space/clock";
 import { easeFactor, fit, lerp, lerpFPS, shortestAngle, stepSpring, type Spring } from "../motion/ease";
-import { animateBeacon, animateCourier, createBeacon, createCourierModel, disposeModel, type CourierModel } from "./models";
+import { animateBeacon, animateCourier, animateHuman, createBeacon, createCourierModel, disposeModel, type CourierModel } from "./models";
+import { createFigurePose } from "./figure";
+import { createHumanGait, humanPose, resetHumanGait, updateHumanGait } from "./humanGait";
 import { FlightInputLatch, NEUTRAL_FLIGHT } from "./flightInput";
 import {
   HOME_GATE, HOME_PAD, KEEPER_DOOR, LANTERNFALL_CENTER, LANTERNFALL_GATE, LANTERNFALL_PAD,
@@ -45,6 +47,8 @@ export type WalkKeys = {
 };
 
 /** x/y are percentages of the canvas; `bearing` is degrees with 0 = up, for an edge arrow. */
+/** Diagnostics (see CourierController.motion): simulated speed and the drawn gait. */
+export type CourierMotion = { speed: number; phase: number; move: number; walk: number; jog: number; run: number };
 export type MarkerState = { visible: boolean; x: number; y: number; offscreen: boolean; bearing: number; distance: number };
 export type Feedback = { text: string; tone: "good" | "warn" | "info" };
 /** The flight readout; null while walking. */
@@ -85,6 +89,8 @@ export type ControlsLike = {
 };
 
 export type CourierControllerOptions = {
+  /** A walking experience, without the retired clock and flight quest loop. */
+  freeRoam?: boolean;
   world: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   controls: ControlsLike;
@@ -167,19 +173,58 @@ const ZERO_OFFSET: Readonly<Vec3> = { x: 0, y: 0, z: 0 };
 
 // --- anchors ----------------------------------------------------------------------------------------------------
 
+/** Start on a real pavement with a short clear walk ahead, rather than in a leftover radial plaza/back garden. */
+export function chooseIslandSpawn(layout: CityLayout, world: WalkWorld): { x: number; z: number; heading: number } {
+  const plan = layout.plan;
+  if (!plan) return { ...polarToXZ(SPAWN_BEARING, SPAWN_RADIUS), heading: SPAWN_HEADING };
+  // The walk opens mid-block on Kew Road's long straight stretch: a narrow street closed in by terraces on both
+  // sides, looking down it, as the reference's walk opens in a narrow lane. Longest straight stretches first, either
+  // way along them, on the left-hand pavement first, so the over-the-shoulder camera (which sits to the courier's
+  // right) looks across the street rather than into the house fronts.
+  const streets = plan.streets.slice().sort((a, b) => {
+    const priority = (id: string) => id === "kew-road" ? 0 : id === "long-acre" ? 1 : id === "fleet-street" ? 2 : 3;
+    return priority(a.id) - priority(b.id);
+  });
+  for (const street of streets) {
+    const segments = street.points.slice(1).map((_, i) => i + 1);
+    const span = (i: number) => Math.hypot(street.points[i]!.x - street.points[i - 1]!.x, street.points[i]!.z - street.points[i - 1]!.z);
+    segments.sort((i, j) => span(j) - span(i));
+    for (const i of segments) {
+      const a = street.points[i - 1]!; const b = street.points[i]!;
+      const length = Math.hypot(b.x - a.x, b.z - a.z);
+      const tx = (b.x - a.x) / length; const tz = (b.z - a.z) / length;
+      for (const side of [-1, 1]) for (const [t, way] of [[0.25, 1], [0.75, -1], [0.4, 1], [0.6, -1], [0.65, 1], [0.35, -1]] as const) {
+        // Travelling `way` along the segment; `side` −1 is the left-hand pavement.
+        const ux = tx * way, uz = tz * way;
+        const offset = side * (street.width / 2 + street.pavement / 2);
+        const x = a.x + (b.x - a.x) * t - uz * offset;
+        const z = a.z + (b.z - a.z) * t + ux * offset;
+        let clear = true;
+        for (let d = -2; d <= 7; d += 0.5) {
+          const px = x + ux * d; const pz = z + uz * d;
+          if (!world.surfaceAt(px, pz).walkable || world.blocked(px, pz, WALK.radius)) { clear = false; break; }
+        }
+        if (clear) return { x, z, heading: Math.atan2(ux, -uz) };
+      }
+    }
+  }
+  throw new Error("The London island has no clear pavement spawn");
+}
+
 /**
  * The anchors the round uses, in world coordinates. The optional arguments let callers reuse an existing layout and
  * walk world (the controller does); each home anchor's height comes from the walk surface.
  */
-export function createAnchors(layout: CityLayout = createCityLayout(), walk: WalkWorld = createHillTownWalkWorld(layout)): Record<AnchorId, Anchor> {
+export function createAnchors(layout: CityLayout = createHillTownLayout(), walk: WalkWorld = createHillTownWalkWorld(layout)): Record<AnchorId, Anchor> {
   const grounded = (x: number, z: number): Vec3 => ({ x, y: walk.surfaceAt(x, z).height, z });
   /** A landmark's local frame has +Z outward and +X along the street. */
   const inLandmark = (district: number, lx: number, lz: number): Vec3 => {
     const landmark = layout.landmarks[district];
     if (!landmark) throw new RangeError(`createAnchors: no landmark for district ${district} (${DISTRICTS.length} districts)`);
-    const sin = Math.sin(landmark.bearing);
-    const cos = Math.cos(landmark.bearing);
-    return grounded(landmark.x + lx * -cos + lz * sin, landmark.z + lx * -sin + lz * -cos);
+    const rotation = landmark.rotation ?? Math.PI - landmark.bearing;
+    const sin = Math.sin(rotation);
+    const cos = Math.cos(rotation);
+    return grounded(landmark.x + lx * cos + lz * sin, landmark.z - lx * sin + lz * cos);
   };
   return {
     "market-parcel": { island: "home", position: inLandmark(6, 0, 0), radius: 16 },
@@ -352,6 +397,12 @@ function copyPose(target: Pose, source: Readonly<Pose>): void {
 /** A frame time long enough that every eased value reaches its target: used to snap a camera into place. */
 const SNAP_DT = 1e3;
 
+/**
+ * The courier dissolves once the camera is closer than `from` to its head, completely by `full` (`most` 1 leaves no
+ * fragments: every cell of the dissolve lattice is gone).
+ */
+const PINNED_FADE = { from: 2.6, full: 1.5, most: 1 } as const;
+
 export class CourierController {
   private currentMode: CourierMode = "walk";
   private currentIsland: IslandId = "home";
@@ -367,8 +418,9 @@ export class CourierController {
   private walkWorld: WalkWorld;
   private readonly anchors: Record<AnchorId, Anchor>;
   private readonly runner: TaskRunner;
-  private readonly clock = new FixedClock();
+  private readonly clock: FixedClock;
   private readonly walker: Walker;
+  private readonly spawnPose: { x: number; z: number; heading: number };
   private readonly courier: CourierModel;
   private readonly beacon: THREE.Group;
   private readonly plane: { group: THREE.Group; propeller: THREE.Group };
@@ -398,8 +450,11 @@ export class CourierController {
   /** The courier's procedural gait, fed from the drawn courier each frame, and the pose it produces. */
   private readonly gait = createGait();
   private readonly courierPose = createPose();
+  /** The London courier walks with the human gait (humanGait.ts) and this pose; the wind-up courier keeps its own. */
+  private readonly humanGait = createHumanGait();
+  private readonly figurePose = createFigurePose();
   private readonly lastShown = { x: 0, z: 0 };
-  private readonly gaitInput = { dt: 0, distance: 0, speed: 0, heading: 0, y: 0, reduced: false, airborne: false };
+  private readonly gaitInput = { dt: 0, distance: 0, speed: 0, heading: 0, y: 0, reduced: false, airborne: false, compact: false };
   /** Seconds a Space press stays queued, so a press just before landing still jumps. */
   private jumpBuffer = 0;
   /** Puffs kicked up by take-offs, landings and running steps (world coordinates), and the stride phase of the last one. */
@@ -431,18 +486,22 @@ export class CourierController {
   private chaseFresh = true;
 
   constructor(private readonly options: CourierControllerOptions) {
+    // Free walking can safely catch up a 200 ms frame through fixed collision steps; ordinary hitches must not
+    // slow the character to half speed. The retired flight mode retains its existing simulation work budget.
+    this.clock = new FixedClock(options.freeRoam ? 12 : undefined);
     this.now = options.now ?? Date.now;
     this.reducedMotion = options.reducedMotion ?? (() => false);
-    this.homeWorld = options.walkWorld ?? createHomeWalkWorld();
+    const layout = options.layout ?? (options.freeRoam ? createCityLayout() : createHillTownLayout());
+    this.homeWorld = options.walkWorld ?? (options.freeRoam ? createHillTownWalkWorld(layout) : createHomeWalkWorld());
     this.walkWorld = this.homeWorld;
-    const layout = options.layout ?? createCityLayout();
     this.anchors = createAnchors(layout, this.homeWorld);
     this.homeCameraWorld = createHomeCameraWorld(this.homeWorld, layout, [launcherBox(HOME_PAD, ZERO_OFFSET)]);
     this.follow = new FollowCamera(options.camera);
     this.runner = new TaskRunner(this.anchors, this.now());
-    const spawn = polarToXZ(SPAWN_BEARING, SPAWN_RADIUS);
-    this.walker = createWalker(spawn.x, spawn.z, this.homeWorld, SPAWN_HEADING);
-    this.courier = createCourierModel(options.palette);
+    this.spawnPose = options.freeRoam ? chooseIslandSpawn(layout, this.homeWorld) : { ...polarToXZ(SPAWN_BEARING, SPAWN_RADIUS), heading: SPAWN_HEADING };
+    this.walker = createWalker(this.spawnPose.x, this.spawnPose.z, this.homeWorld, this.spawnPose.heading);
+    this.courier = createCourierModel(options.palette, options.freeRoam);
+    if (options.freeRoam) this.courier.rig.key.visible = false;
     this.beacon = createBeacon(options.palette);
     this.dust = createDust(options.palette);
     this.plane = createPlaneModel("cream-copper", "world");
@@ -468,7 +527,8 @@ export class CourierController {
     this.feedback = null;
     this.clock.reset();
     this.runner.reset(this.now());
-    this.options.world.add(this.courier.group, this.beacon, this.plane.group, this.dust.mesh);
+    this.options.world.add(this.courier.group, this.dust.mesh);
+    if (!this.options.freeRoam) this.options.world.add(this.beacon, this.plane.group);
 
     if (!this.options.keys && !this.ownKeys && typeof window !== "undefined") {
       this.ownKeys = new DomWalkKeys(this.now);
@@ -492,8 +552,7 @@ export class CourierController {
     if (canvas && !this.detachFollowInput) {
       this.detachFollowInput = attachFollowInput(canvas, this.follow, () => this.started && this.currentMode === "walk" && !this.suspended);
     }
-    const spawn = polarToXZ(SPAWN_BEARING, SPAWN_RADIUS);
-    this.enterWalk(spawn, SPAWN_HEADING, FOLLOW.swoopSeconds);
+    this.enterWalk(this.spawnPose, this.spawnPose.heading, FOLLOW.swoopSeconds);
     this.updateBeacon(this.runner.snapshot(this.now()));
   }
 
@@ -537,12 +596,15 @@ export class CourierController {
    */
   update(frameDt: number): void {
     if (!this.started) return;
-    this.options.camera.getWorldDirection(this.scratch);
-    this.cameraYaw = Math.atan2(this.scratch.x, -this.scratch.z);
+    if (this.options.freeRoam && this.currentMode === "walk") this.cameraYaw = this.follow.yaw;
+    else {
+      this.options.camera.getWorldDirection(this.scratch);
+      this.cameraYaw = Math.atan2(this.scratch.x, -this.scratch.z);
+    }
 
     this.alpha = this.clock.step(frameDt, (dt) => this.fixedStep(dt));
 
-    const animationDt = Number.isFinite(frameDt) ? Math.min(Math.max(frameDt, 0), MAX_ANIMATION_DT) : 0;
+    const animationDt = Number.isFinite(frameDt) ? Math.min(Math.max(frameDt, 0), this.options.freeRoam ? 0.2 : MAX_ANIMATION_DT) : 0;
     const nowMs = this.now();
     this.updateBeacon(this.runner.snapshot(nowMs));
 
@@ -618,6 +680,12 @@ export class CourierController {
       anchor.radius, anchor.maxDy ?? 6);
   }
 
+  /** Debug and tests (walk mode): put the courier at the clear spot nearest (x, z) on the current island (island-local). */
+  teleportTo(x: number, z: number): void {
+    if (this.currentMode !== "walk" || !Number.isFinite(x) || !Number.isFinite(z)) return;
+    this.placeCourierNear({ x, y: this.walkWorld.surfaceAt(x, z).height, z }, 6, 6);
+  }
+
   /** Debug and tests (walk mode): put the courier within the free-flight prompt range of the current island's pad. */
   teleportToPad(): void {
     if (this.currentMode !== "walk") return;
@@ -650,6 +718,15 @@ export class CourierController {
     this.runner.update("fly", plane.position);
     this.chaseFresh = true;
     if (this.started) this.chaseCamera(SNAP_DT);
+  }
+
+  /**
+   * Diagnostics: the walker's simulated horizontal speed (units per second) and the drawn gait (the left leg's cycle
+   * phase in [0, 1), how far into moving, and the walk/jog/run mix), so movement can be measured in the running game.
+   */
+  motion(): CourierMotion {
+    const gait = this.humanGait;
+    return { speed: Math.hypot(this.walker.vx, this.walker.vz), phase: gait.phase, move: gait.move, walk: gait.walk, jog: gait.jog, run: gait.run };
   }
 
   /** Position (copy) for diagnostics, in world coordinates: the courier, or the plane while flying. */
@@ -854,6 +931,7 @@ export class CourierController {
   }
 
   private drainInteract(): void {
+    if (this.options.freeRoam) return;
     this.options.keys?.takeInteract();
     this.options.keys?.takeJump?.();
     this.ownKeys?.clear();
@@ -1089,8 +1167,9 @@ export class CourierController {
     this.subject.vx = 0;
     this.subject.vz = 0;
     resetGait(this.gait, this.shown.heading, this.shown.y);
+    resetHumanGait(this.humanGait, this.shown.heading, this.shown.y);
     // A spawn, teleport or landing is not a footfall: no heel puff on the first frame after it.
-    this.lastStridePhase = this.gait.phase;
+    this.lastStridePhase = this.stride().phase;
   }
 
   /** Drive the gait from what is drawn (ground covered, speed, turning, height) and put the pose on the rig. */
@@ -1113,17 +1192,37 @@ export class CourierController {
     input.y = shown.y;
     input.reduced = reduced;
     input.airborne = !this.walker.grounded;
-    updateGait(this.gait, input);
-    animateCourier(this.courier, gaitPose(this.gait, this.courierPose), tickValue(cycleMs(nowMs)), reduced);
+    input.compact = this.options.freeRoam === true;
+    const figure = this.courier.figure;
+    if (figure) {
+      updateHumanGait(this.humanGait, { ...input, scale: figure.scale });
+      animateHuman(this.courier, humanPose(this.humanGait, this.figurePose, figure.leg));
+    } else {
+      updateGait(this.gait, input);
+      animateCourier(this.courier, gaitPose(this.gait, this.courierPose), tickValue(cycleMs(nowMs)), reduced);
+    }
     this.kickRunDust();
+  }
+
+  /**
+   * Where the stride is, whichever gait draws the courier: phase in radians (footfalls at 0 and PI), how much of it is
+   * running flat out, and how much of the airborne pose shows.
+   */
+  private stride(): { phase: number; run: number; air: number } {
+    if (this.courier.figure) {
+      const gait = this.humanGait;
+      return { phase: gait.phase * Math.PI * 2, run: gait.run, air: gait.air };
+    }
+    return { phase: this.gait.phase, run: this.gait.run, air: this.gait.air };
   }
 
   /** A puff at the heel each time a foot lands while running flat out. */
   private kickRunDust(): void {
-    const phase = this.gait.phase;
+    const stride = this.stride();
+    const phase = stride.phase;
     const last = this.lastStridePhase;
     this.lastStridePhase = phase;
-    if (!this.walker.grounded || this.gait.run < DUST.runFrom || this.gait.air > 0.1) return;
+    if (!this.walker.grounded || stride.run < DUST.runFrom || stride.air > 0.1) return;
     // A foot lands twice per cycle, at phase 0 and PI: count a crossing of either (the phase wraps at TAU).
     const half = Math.PI;
     if (Math.floor(phase / half) === Math.floor(last / half) && phase >= last) return;
@@ -1139,6 +1238,7 @@ export class CourierController {
   }
 
   private updateBeacon(task: TaskSnapshot): void {
+    if (this.options.freeRoam) { this.beacon.visible = false; this.plane.group.visible = false; return; }
     const target = task.done ? null : task.targetPosition;
     this.beacon.visible = target !== null;
     if (!target) return;
@@ -1160,6 +1260,24 @@ export class CourierController {
   /** The follow camera tracks what is drawn (blended between fixed steps), so it moves as smoothly as the courier. */
   private followWalkCamera(dt: number): void {
     this.follow.update(dt, this.followSubject(), this.reducedMotion());
+    this.fadeWhenPinned(dt);
+  }
+
+  /**
+   * A camera pinned close behind the courier (backed against a wall, a van or a tree) would show nothing but its back.
+   * Like the reference does for its own courier, the figure dissolves while the camera is that close, so the street
+   * stays in view; it eases back as the camera pulls out. Shadows are unaffected.
+   */
+  private fadeWhenPinned(dt: number): void {
+    const figure = this.courier.figure;
+    if (!figure) return;
+    const uniform = (figure.mesh.material as THREE.ShaderMaterial).uniforms.uFade;
+    if (!uniform) return;
+    const head = this.scratch.set(this.shown.x, this.shown.y + figure.height * 0.85, this.shown.z);
+    const near = this.options.camera.position.distanceTo(head);
+    const target = THREE.MathUtils.clamp((PINNED_FADE.from - near) / (PINNED_FADE.from - PINNED_FADE.full), 0, 1) * PINNED_FADE.most;
+    uniform.value = this.reducedMotion() ? target : lerpFPS(uniform.value, target, 0.25, dt);
+    if (uniform.value < 0.01) uniform.value = 0;
   }
 
   private followSubject(): FollowSubject {

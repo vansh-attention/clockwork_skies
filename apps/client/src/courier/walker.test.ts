@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STAIR_BEARINGS, TERRACES, createCityLayout, polarToXZ } from "../city/layout";
+import { STAIR_BEARINGS, TERRACES, createHillTownLayout as createCityLayout, polarToXZ } from "../city/layout";
 import { WALK, createWalker, stepWalker, type WalkInput, type Walker } from "./walker";
 import { createHillTownWalkWorld, type WalkWorld } from "./walkWorld";
 

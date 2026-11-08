@@ -18,7 +18,7 @@ it("retains visible outlines when thickness is set before first resize", () => {
 
 it("starts with flat ink, no fade and no grade, and clamps the style it is given", () => {
   const composer = new IllustratedComposer({ setRenderTarget() {}, clear() {}, render() {} } as never);
-  expect(composer.style).toEqual({ fadeNear: 1e6, fadeFar: 2e6, fadeMin: 1, inkTint: 0, grade: 0, boil: 0 });
+  expect(composer.style).toEqual({ lines: "classic", fadeNear: 1e6, fadeFar: 2e6, fadeMin: 1, inkTint: 0, grade: 0, lut: 0, boil: 0 });
   composer.setStyle({ fadeNear: 300, fadeFar: 100, fadeMin: -1, inkTint: 3, grade: 0.5 });
   const style = composer.style;
   expect(style.fadeNear).toBe(300);

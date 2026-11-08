@@ -1,8 +1,10 @@
 import * as THREE from "three";
+import { frontageApron, onFrontage, type FrontageApron } from "./londonDetails";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { illustratedEnvironment } from "@clockwork/render";
 import { CANAL, HOME_LAUNCH_SITE, ISLAND_RADIUS, STAIR_BEARINGS, STREET, SUMMIT, TERRACES, angularGap, bearingOf, createCityLayout, polarToXZ, type CityLayout } from "./layout";
-import { CHIMNEY_POT_HEIGHT, frame, local, merge, type MaterialSource } from "./kit";
+import { CHIMNEY_POT_HEIGHT, at, frame, houseFrame, local, merge, type MaterialSource } from "./kit";
+import { nearestOnPolyline } from "./londonPlan";
 import type { WalkWorld } from "../courier/walkWorld";
 
 /**
@@ -63,14 +65,31 @@ function tuftGeometry(): THREE.BufferGeometry {
   const blades: THREE.BufferGeometry[] = [];
   for (let blade = 0; blade < 3; blade += 1) {
     for (const turn of [0, Math.PI]) {
-      blades.push(new THREE.PlaneGeometry(0.55, 1.4, 1, 2).translate(0, 0.7, 0).rotateY((blade / 3) * Math.PI + turn));
+      const leaf = new THREE.Shape();
+      leaf.moveTo(-0.14, 0); leaf.lineTo(0.05, 0.62); leaf.lineTo(0.12, 1.05); leaf.lineTo(-0.06, 0.55); leaf.closePath();
+      blades.push(new THREE.ShapeGeometry(leaf).rotateY((blade / 3) * Math.PI + turn));
     }
   }
   return withSway(merge(blades), "y", 0, 1.4, 0.55);
 }
 
-function isLawn(x: number, z: number, layout: CityLayout, world: WalkWorld): boolean {
+function isLawn(x: number, z: number, layout: CityLayout, world: WalkWorld, frontages: readonly FrontageApron[]): boolean {
   const r = Math.hypot(x, z);
+  if (layout.plan) {
+    if (r > layout.plan.radius - 8) return false;
+    if (frontages.some((apron) => onFrontage(x, z, apron, 0.3))) return false;
+    const plan = layout.plan;
+    if (nearestOnPolyline({ x, z }, plan.river.points).distance < plan.river.halfWidth + 4) return false;
+    if (plan.streets.some((street) => nearestOnPolyline({ x, z }, street.points).distance < street.width / 2 + street.pavement + 1.5)) return false;
+    if (plan.squares.some((square) => {
+      const dx = x - square.x, dz = z - square.z;
+      const lx = dx * Math.cos(square.rotation) - dz * Math.sin(square.rotation);
+      const lz = dx * Math.sin(square.rotation) + dz * Math.cos(square.rotation);
+      return Math.abs(lx) < square.width / 2 + 1.5 && Math.abs(lz) < square.depth / 2 + 1.5;
+    })) return false;
+    if (layout.landmarks.some((landmark) => Math.hypot(x - landmark.x, z - landmark.z) < landmark.clearRadius * 0.85)) return false;
+    return world.surfaceAt(x, z).walkable && !world.blocked(x, z, 1.4);
+  }
   if (r < SUMMIT.radius + 2 || r > ISLAND_RADIUS - 8) return false;
   if (r > CANAL.inner - 4 && r < CANAL.outer + 30) return false; // the canal and its promenade
   for (const terrace of TERRACES) {
@@ -85,25 +104,27 @@ function isLawn(x: number, z: number, layout: CityLayout, world: WalkWorld): boo
 }
 
 function buildGrass(palette: MaterialSource, layout: CityLayout, world: WalkWorld, random: () => number): THREE.InstancedMesh {
+  const frontages = layout.plan ? layout.plan.houses.map((house) => frontageApron(house, layout.plan!)).filter((apron): apron is FrontageApron => apron !== null) : [];
   const matrices: THREE.Matrix4[] = [];
   const position = new THREE.Vector3();
   const rotation = new THREE.Quaternion();
   const scale = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0);
-  const inner = (SUMMIT.radius + 2) ** 2;
-  const outer = (ISLAND_RADIUS - 8) ** 2;
-  for (let attempt = 0; attempt < GRASS_ATTEMPTS && matrices.length < GRASS_TARGET; attempt += 1) {
+  const inner = layout.plan ? 0 : (SUMMIT.radius + 2) ** 2;
+  const outer = ((layout.plan?.radius ?? ISLAND_RADIUS) - 8) ** 2;
+  const target = layout.plan ? 600 : GRASS_TARGET;
+  for (let attempt = 0; attempt < GRASS_ATTEMPTS && matrices.length < target; attempt += 1) {
     // Even over area: radius from the square root of a uniform pick.
     const r = Math.sqrt(inner + random() * (outer - inner));
     const { x, z } = polarToXZ(random() * Math.PI * 2, r);
-    if (!isLawn(x, z, layout, world)) continue;
+    if (!isLawn(x, z, layout, world, frontages)) continue;
     position.set(x, world.surfaceAt(x, z).height, z);
     rotation.setFromAxisAngle(up, random() * Math.PI * 2);
     const size = 0.7 + random() * 0.7;
     scale.set(size, size * (0.8 + random() * 0.5), size);
     matrices.push(new THREE.Matrix4().compose(position, rotation, scale));
   }
-  const grass = new THREE.InstancedMesh(tuftGeometry(), palette.get("leaf1"), matrices.length);
+  const grass = new THREE.InstancedMesh(tuftGeometry(), palette.get("tuft"), matrices.length);
   matrices.forEach((matrix, index) => grass.setMatrixAt(index, matrix));
   grass.name = "Grass tufts";
   grass.receiveShadow = true;
@@ -124,10 +145,23 @@ function pennantGeometry(): THREE.BufferGeometry {
   return withSway(merge([pole, flag]), "x", 0.2, 4.55, 0.9);
 }
 
-function buildPennants(palette: MaterialSource): THREE.Mesh {
+function buildPennants(palette: MaterialSource, layout: CityLayout, world: WalkWorld): THREE.Mesh {
   const base = pennantGeometry();
   const parts: THREE.BufferGeometry[] = [];
-  for (const stair of STAIR_BEARINGS) {
+  if (layout.plan) {
+    for (const square of layout.plan.squares) for (const side of [-1, 1]) {
+      // A pair flanks the square's outer corners, on the actual ground rather than the removed summit.
+      for (const inset of [2, 5, 8]) {
+        const placement = local(at(square.x, 0, square.z, square.rotation), side * (square.width / 2 - inset), 0, square.depth / 2 - 2, Math.PI / 2);
+        const point = new THREE.Vector3().setFromMatrixPosition(placement);
+        const surface = world.surfaceAt(point.x, point.z);
+        if (!surface.walkable || world.blocked(point.x, point.z, 0.5)) continue;
+        placement.setPosition(point.x, surface.height, point.z);
+        parts.push(base.clone().applyMatrix4(placement));
+        break;
+      }
+    }
+  } else for (const stair of STAIR_BEARINGS) {
     for (const side of [-1, 1]) {
       const bearing = stair + side * 0.075;
       parts.push(base.clone().applyMatrix4(local(frame(bearing, SUMMIT.radius - 3, SUMMIT.top), 0, 0, 0, Math.PI / 2)));
@@ -135,11 +169,11 @@ function buildPennants(palette: MaterialSource): THREE.Mesh {
   }
   base.dispose();
   // mergeGeometries (not kit merge) so the sway weights survive.
-  const merged = mergeGeometries(parts, false);
+  const merged = parts.length ? mergeGeometries(parts, false) : base.clone().scale(0, 0, 0);
   parts.forEach((part) => part.dispose());
   if (!merged) throw new Error("Could not merge the pennants");
   const mesh = new THREE.Mesh(merged, palette.get("copper"));
-  mesh.name = "Summit pennants";
+  mesh.name = layout.plan ? "London square pennants" : "Summit pennants";
   mesh.castShadow = true;
   mesh.receiveShadow = true;
   return mesh;
@@ -157,7 +191,7 @@ function chimneyTops(layout: CityLayout): THREE.Vector3[] {
   return layout.houses.filter((house) => house.chimney).map((house) => {
     const roofHeight = Math.min(7, Math.max(4.5, house.depth * 0.55));
     // Matches addHouse: the stack (roofHeight + 1.5 tall, centred at height + roofHeight / 2 + 0.6) plus its pots.
-    const top = local(frame(house.theta, house.r, house.y), house.width / 4, house.height + roofHeight + 1.35 + CHIMNEY_POT_HEIGHT, -house.depth / 5);
+    const top = local(houseFrame(house), house.width / 4, house.height + roofHeight + 1.35 + CHIMNEY_POT_HEIGHT, -house.depth / 5);
     return new THREE.Vector3().setFromMatrixPosition(top);
   });
 }
@@ -168,7 +202,7 @@ export function buildAmbient(palette: MaterialSource, world: WalkWorld, layout: 
   group.name = "Ambient life";
 
   const grass = buildGrass(palette, layout, world, random);
-  const pennants = buildPennants(palette);
+  const pennants = buildPennants(palette, layout, world);
 
   const birdList: Bird[] = FLOCKS.flatMap((flock, index) => Array.from({ length: flock.count }, () => ({
     flock: index,

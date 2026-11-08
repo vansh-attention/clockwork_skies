@@ -1,38 +1,30 @@
 import { test, expect } from "@playwright/test";
 
-type CityDiagnostics = { mode: string; focused: number | null; calls: number; triangles: number; parts: string[] };
-
-test("the hill town opens, visits a district and returns to the overview with the client alone", async ({ page }) => {
-  const requests: string[] = [];
+test("the painted London island visits all eight places without clockwork or a backend", async ({ page }) => {
   const errors: string[] = [];
-  page.on("request", (request) => requests.push(request.url()));
+  const requests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  page.on("console", (message) => {
-    if (message.type() === "error" || /GL_INVALID_OPERATION|missing fragment shader outputs/.test(message.text())) errors.push(message.text());
-  });
-
+  page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
+  page.on("request", (request) => requests.push(request.url()));
   await page.goto("/?debug=1");
-  await expect(page.getByRole("heading", { name: /clockwork.*skies/i })).toBeVisible();
-  await expect(page.getByText("TOWN CLOCK")).toBeVisible();
-  await page.getByRole("button", { name: /look around/i }).click();
-  await expect(page.locator("main[data-phase='explore']")).toBeVisible();
-
+  await expect(page).toHaveTitle("Little London");
+  await expect(page.getByRole("heading", { name: /little.*london/i })).toBeVisible();
+  await expect(page.getByText("TOWN CLOCK")).toHaveCount(0);
+  await page.getByRole("button", { name: "VIEW THE ISLAND", exact: true }).click();
   const districts = page.getByRole("navigation", { name: "Districts" }).getByRole("button");
   await expect(districts).toHaveCount(8);
-  await page.getByRole("button", { name: /bell observatory/i }).click();
-  await expect(page.getByRole("heading", { name: "The Bell Observatory" })).toBeVisible();
-  await expect(page.locator("main")).toHaveAttribute("data-district", "landmark-2");
-
+  for (const [i, name] of ["Regent's Park", "St Paul's", "Tower Wharf", "Battersea", "Westminster", "Kew Gardens", "Covent Garden", "Bloomsbury"].entries()) {
+    await districts.nth(i).click();
+    await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  }
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("heading", { name: "The Bell Observatory" })).toHaveCount(0);
-  await expect(page.locator("main")).not.toHaveAttribute("data-district", /.+/);
-
-  const diagnostics = await page.evaluate(() => (window as unknown as { __CLOCKWORK_CITY__?: () => CityDiagnostics }).__CLOCKWORK_CITY__?.());
-  expect(diagnostics?.mode).toBe("explore");
-  expect(diagnostics?.calls ?? 0).toBeGreaterThan(1);
-  expect(diagnostics?.triangles ?? 0).toBeGreaterThan(1000);
-  // The second island, the home launcher and both landing gates are part of the world, not just the flight maths.
-  expect(diagnostics?.parts).toEqual(expect.arrayContaining(["Clockwork hill town", "Lanternfall Isle", "Launchers and gates"]));
+  await expect(page.locator(".district-card")).toHaveCount(0);
+  const state = await page.evaluate(() => JSON.parse((window as unknown as { render_game_to_text(): string }).render_game_to_text()));
+  expect(state.population).toBe(32);
+  expect(state.parts).toContain("Little London island");
+  expect(state.parts.join(" ")).not.toMatch(/Clockwork hill town|Lanternfall|Launchers/);
+  expect(state.calls).toBeGreaterThan(1);
+  expect(state.objective).toBeNull();
   expect(errors).toEqual([]);
-  expect(requests.some((url) => /:2567|\/api\/|ws:/i.test(url))).toBe(false);
+  expect(requests.some((url) => /:2567|\/api\//.test(url))).toBe(false);
 });

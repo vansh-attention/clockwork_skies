@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Palette } from "../city/kit";
-import { createCityLayout } from "../city/layout";
+import { createHillTownLayout as createCityLayout } from "../city/layout";
 import { CourierController, createAnchors, type ControlsLike, type WalkKeys } from "./CourierController";
 import { HOME_PAD, KEEPER_DOOR, LANTERNFALL_GATE, LANTERNFALL_PAD, createHomeWalkWorld, launchRelease } from "./outpost";
 import { LANDING_SPEED, TASKS, type AnchorId } from "./tasks";
@@ -200,7 +200,8 @@ describe("CourierController", () => {
     expect(drawn.distanceTo(new THREE.Vector3(after.x, after.y, after.z))).toBeLessThan(0.5);
     const toCourier = drawn.clone().sub(camera.position);
     expect(toCourier.x * look.x + toCourier.z * look.z).toBeGreaterThan(0);
-    expect(camera.position.distanceTo(drawn)).toBeLessThan(FOLLOW.distance + FOLLOW.lead.max + FOLLOW.targetLift);
+    // (Over the shoulder, and trailing by well under a unit at walking pace.)
+    expect(camera.position.distanceTo(drawn)).toBeLessThan(FOLLOW.distance + FOLLOW.shoulder + FOLLOW.targetLift + 1);
     controller.dispose();
   });
 
@@ -279,7 +280,7 @@ describe("CourierController", () => {
     press(600, "Watch the wheel");
     expect(controller.hud().feedback?.tone).toBe("warn");
     press(1100, "On the tick (2/3)");
-    press(2100, "Oil the escapement complete");
+    press(2100, "Westminster clock complete");
     expect(controller.hud().task.taskId).toBe("lanternfall-letter");
     expect(controller.hud().task.tickHits).toBe(0);
     controller.dispose();

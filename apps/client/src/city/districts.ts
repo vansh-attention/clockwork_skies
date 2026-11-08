@@ -21,15 +21,23 @@ const COMPASS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 const COMPASS_WORDS = ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"] as const;
 
 // One entry per landmark in CLOCKWORK_WORLD, in the same order.
-const SPECS: ReadonlyArray<{ kind: DistrictKind; terrace: DistrictTerrace; description: string }> = [
-  { kind: "windpumps", terrace: 2, description: "Wind-pumps on copper masts lift canal water up to every terrace." },
-  { kind: "observatory", terrace: 3, description: "The telescope here sets the town clock each night by the stars." },
-  { kind: "port", terrace: 0, description: "Canal boats tie up beside a sundial the size of a plaza." },
-  { kind: "workshops", terrace: 1, description: "Repair sheds and tall chimneys. Anything broken in town ends up here." },
-  { kind: "escapement", terrace: 3, description: "The giant escapement wheel that lets every gear in town move one tick at a time." },
-  { kind: "farm", terrace: 1, description: "Striped fields and a wind-driven loom that weaves sailcloth." },
-  { kind: "market", terrace: 2, description: "Striped stalls selling springs, rivets and fresh bread." },
-  { kind: "orchard", terrace: 2, description: "Trees with brass leaves on the sunniest slope of the hill." },
+const SPECS: ReadonlyArray<{ name: string; accent: string; kind: DistrictKind; terrace: DistrictTerrace; description: string }> = [
+  { name: "Regent's Park", accent: "#50775d", kind: "windpumps", terrace: 2,
+    description: "Plane trees, clipped lawns and an iron bandstand. A quiet garden tucked among the busy streets." },
+  { name: "St Paul's", accent: "#8b8c7b", kind: "observatory", terrace: 3,
+    description: "A great lead-grey dome above a Portland-stone colonnade. The cathedral watches over a tangle of brick lanes." },
+  { name: "Tower Wharf", accent: "#4d858a", kind: "port", terrace: 0,
+    description: "Twin stone towers and blue suspension chains frame the water. Boats wait beside the embankment steps." },
+  { name: "Battersea", accent: "#ad6549", kind: "workshops", terrace: 1,
+    description: "Four pale chimneys rise from the red-brick power station. Workshop doors and loading yards line the river road." },
+  { name: "Westminster", accent: "#ad8b4e", kind: "escapement", terrace: 3,
+    description: "Gothic windows, pale stone and slender pinnacles. A little Parliament Square where the island's streets meet." },
+  { name: "Kew Gardens", accent: "#708a5f", kind: "farm", terrace: 1,
+    description: "An iron-and-glass palm house sits among green borders. Follow the garden path past the potting beds." },
+  { name: "Covent Garden", accent: "#b7543f", kind: "market", terrace: 2,
+    description: "A covered market of striped awnings, flower stalls and little shopfronts. Wander the arcade and watch the city go by." },
+  { name: "Bloomsbury", accent: "#71846a", kind: "orchard", terrace: 2,
+    description: "A leafy Georgian square enclosed by black iron railings. Sash windows and chimney pots peek through the trees." },
 ];
 
 export const DISTRICTS: readonly District[] = CLOCKWORK_WORLD.landmarks.map((landmark, index) => {
@@ -37,8 +45,6 @@ export const DISTRICTS: readonly District[] = CLOCKWORK_WORLD.landmarks.map((lan
   if (!spec) throw new Error(`No city district is defined for landmark ${landmark.id}`);
   return {
     id: landmark.id,
-    name: landmark.name,
-    accent: landmark.accent,
     ...spec,
     bearing: index * 45,
     compass: COMPASS[index % COMPASS.length]!,
@@ -47,9 +53,10 @@ export const DISTRICTS: readonly District[] = CLOCKWORK_WORLD.landmarks.map((lan
 });
 
 export function terraceLabel(terrace: DistrictTerrace): string {
-  return terrace === 0 ? "Canal side" : `Terrace ${terrace}`;
+  return terrace === 0 ? "Thames side" : ["", "Riverside streets", "Garden streets", "Upper streets"][terrace]!;
 }
 
 export function districtLocation(district: District): string {
-  return `${terraceLabel(district.terrace)} · ${district.compassWords} of the tower`;
+  const places: Record<DistrictKind, string> = { windpumps: "PARK GARDENS", observatory: "THE CATHEDRAL QUARTER", port: "THE RIVER CROSSING", workshops: "THE SOUTH BANK", escapement: "PARLIAMENT SQUARE", farm: "THE GLASSHOUSE GARDENS", market: "THE MARKET LANES", orchard: "THE GARDEN SQUARE" };
+  return places[district.kind];
 }

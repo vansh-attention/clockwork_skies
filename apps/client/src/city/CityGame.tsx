@@ -136,7 +136,7 @@ export function CityGame() {
 
   const district = focused === null ? null : DISTRICTS[focused] ?? null;
   const announcement = mode === "title" ? "" : mode === "play"
-    ? playAnnouncement(hud)
+    ? "Walking around Little London. WASD to move, drag to look, Escape for the guide."
     : district ? `Now viewing ${district.name}. ${districtLocation(district)}.` : "Viewing the whole town.";
   const setMotion = (value: boolean) => {
     setReducedMotion(value);
@@ -148,32 +148,32 @@ export function CityGame() {
     <div className="game-canvas" ref={mount} />
 
     {mode === "title" && <section className="title-screen" aria-labelledby="game-title">
-      <div className="title-kicker"><span>HILL TOWN / CLOCKWORK PRIME</span><i /></div>
-      <h1 id="game-title"><span>CLOCKWORK</span><em>SKIES</em></h1>
-      <p>A hill town where every gear keeps the same time.<br />Look around its eight districts at your own pace.</p>
+      <div className="title-kicker"><span>A SMALL ISLAND. A LITTLE LONDON.</span><i /></div>
+      <h1 id="game-title"><span>LITTLE</span><em>LONDON</em></h1>
+      <p>Brick lanes, corner shops and a river by the sea.<br />A painted little island, yours to wander.</p>
       <div className="launch-card city-card">
-        <div className="form-heading"><span>TOWN CLOCK</span><strong className="city-time">{time}</strong></div>
-        <p className="city-card-note">The tower shows your local time. Once a second, every gear in town moves one tick.</p>
+        <div className="form-heading"><span>COME ON IN</span><strong className="city-time">↗</strong></div>
+        <p className="city-card-note">A little city of familiar places.<br />No hurry. Just follow the next street.</p>
         {error && <p className="form-error" role="alert">{error}</p>}
-        <button className="launch" onClick={startRound} disabled={!!error}>START THE ROUND<span aria-hidden="true">↗</span></button>
-        <button className="look-around" onClick={enter} disabled={!!error}>LOOK AROUND</button>
-        <small>Three deliveries across the town and the sky. WASD to walk, E to act.</small>
+        <button className="launch" onClick={startRound} disabled={!!error}>TAKE A WALK<span aria-hidden="true">↗</span></button>
+        <button className="look-around" onClick={enter} disabled={!!error}>VIEW THE ISLAND</button>
+        <small>WASD to walk · Drag to look · Scroll to zoom</small>
       </div>
       <button className="title-manual" onClick={openGuide} aria-expanded={guideOpen}>GUIDE <span aria-hidden="true">↗</span></button>
-      <div className="title-footer"><span>ILLUSTRATED HILL TOWN</span><span>EIGHT DISTRICTS · ONE CLOCK</span></div>
+      <div className="title-footer"><span>POSTCARDS FROM A LITTLE ISLAND</span><span>A PAINTED LONDON BY THE SEA</span></div>
     </section>}
 
     {mode === "explore" && <>
       <header className="flight-header city-header">
-        <div className="wordmark"><span className="mark" aria-hidden="true">C</span><strong>CLOCKWORK SKIES</strong></div>
+        <div className="wordmark"><span className="mark" aria-hidden="true">L</span><strong>LITTLE LONDON</strong></div>
         <div className="phase"><span>{district ? district.name : "OVERVIEW"}</span><b>{time}</b></div>
         <button onClick={openGuide} aria-expanded={guideOpen}>GUIDE</button>
       </header>
       <nav className="district-panel" aria-label="Districts">
-        <span className="district-panel-title">DISTRICTS</span>
+        <span className="district-panel-title">AROUND LONDON</span>
         <ul>{DISTRICTS.map((item, index) => <li key={item.id}>
           <button aria-pressed={focused === index} onClick={() => select(index)} style={{ "--accent": item.accent } as CSSProperties}>
-            <abbr title={item.compassWords}>{item.compass}</abbr>{" "}<span>{item.name}</span>
+            <abbr title="Neighbourhood">{String(index + 1).padStart(2, "0")}</abbr>{" "}<span>{item.name}</span>
           </button>
         </li>)}</ul>
       </nav>
@@ -191,23 +191,22 @@ export function CityGame() {
       <div className="control-hint">DRAG TO LOOK · SCROLL TO ZOOM · ← → CIRCLE · ESC OVERVIEW</div>
     </>}
 
-    {mode === "play" && hud && <CourierHud hud={hud} time={time} guideOpen={guideOpen} onGuide={openGuide} onRestart={restartRound} onLookAround={enter} />}
+    {mode === "play" && hud && <CourierHud roam hud={hud} time={time} guideOpen={guideOpen} onGuide={openGuide} onRestart={restartRound} onLookAround={enter} />}
     {mode === "play" && error && <p className="center-message city-error" role="alert">{error}</p>}
 
     <div className="sr-live" aria-live="polite">{announcement}</div>
 
     {guideOpen && <section className="settings city-guide" ref={guideRef} tabIndex={-1} role="dialog" aria-modal="true" aria-label="Guide" onKeyDown={trapTab}>
-      <div><span>GUIDE / HILL TOWN</span><button onClick={closeGuide} aria-label="Close guide">×</button></div>
-      <h2>{mode === "play" ? "How to play" : "How to look around"}</h2>
-      <p>The tower clock shows your local time. Once a second, every gear, windmill and wheel in town moves one tick together.</p>
+      <div><span>A POCKET GUIDE TO LONDON</span><button onClick={closeGuide} aria-label="Close guide">×</button></div>
+      <h2>{mode === "play" ? "Take a walk" : "How to look around"}</h2>
+      <p>Follow the brick lanes, cross the river and find a quiet garden square. You can wander at your own pace or view the whole island from above.</p>
       {mode === "play" ? <dl className="controls">
         <dt>W A S D</dt><dd>Walk</dd>
         <dt>Shift</dt><dd>Run</dd>
         <dt>Space</dt><dd>Jump (onto kerbs, steps and low walls)</dd>
-        <dt>E</dt><dd>Pick up, deliver, oil, launch</dd>
         <dt>Drag</dt><dd>Look around</dd>
-        <dt>In the air</dt><dd>Mouse steers once you click, W/S throttle, Space boost, A/D bank, Esc releases the mouse</dd>
-        <dt>Esc</dt><dd>Free the mouse (in flight), or open/close this guide</dd>
+        <dt>Scroll</dt><dd>Zoom</dd>
+        <dt>Esc</dt><dd>Open or close this guide</dd>
       </dl> : <dl className="controls">
         <dt>Drag / one finger</dt><dd>Look around</dd>
         <dt>Scroll / pinch</dt><dd>Zoom in and out</dd>

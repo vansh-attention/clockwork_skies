@@ -8,8 +8,11 @@ import { createPlaneModel } from "../planeModel";
 import { buildAmbient } from "./ambient";
 import { Sky } from "./sky";
 import { createHillTownWalkWorld } from "../courier/walkWorld";
+import { buildResidents } from "./residents";
+import { createHillTownLayout } from "./layout";
 
-const city = buildCity();
+// These retained contracts exercise the retired hill-town builder; littleLondon.test covers the default island.
+const city = buildCity(createHillTownLayout());
 
 function materialsOf(object: THREE.Object3D): THREE.Material[] {
   const material = (object as THREE.Mesh).material;
@@ -64,8 +67,10 @@ it("lays granite setts on the summit: a frame round the plinth and a path to eve
 it("builds four clock faces, a focus point per district and the ticking parts", () => {
   expect(city.faces).toHaveLength(4);
   expect(city.focusPoints).toHaveLength(8);
-  expect(city.spinners.length).toBeGreaterThanOrEqual(7);
-  expect(city.anchor.parent).toBe(city.group);
+  // London retains the rim and clock crown plus Westminster's human-scale clock service hatch.
+  expect(city.spinners).toHaveLength(3);
+  for (const spinner of city.spinners) expect(spinner.object.parent).toBe(city.group);
+  expect(city.anchor).toBeNull();
   const hands = handsGeometry(city.faces, Math.PI / 2, Math.PI);
   expect(hands.getAttribute("position").count).toBeGreaterThan(0);
 });
@@ -79,7 +84,8 @@ describe("the whole playable world", () => {
   const plane = createPlaneModel("brass", "world");
   const ambient = buildAmbient(city.palette, createHillTownWalkWorld());
   const sky = new Sky();
-  const parts = [city.group, lanternfall.group, launchers.group, courier.group, beacon, plane.group, ambient.group, sky.dome];
+  const residents = buildResidents(city.palette);
+  const parts = [city.group, lanternfall.group, launchers.group, courier.group, beacon, plane.group, ambient.group, residents.group, sky.dome];
 
   const meshesOf = (root: THREE.Object3D) => {
     const meshes: THREE.Mesh[] = [];
@@ -95,7 +101,13 @@ describe("the whole playable world", () => {
   });
 
   it("stays within the 110 draw-call world budget (sky, grass, pennants, birds and smoke included)", () => {
-    expect(parts.reduce((total, part) => total + meshesOf(part).length, 0)).toBeLessThanOrEqual(110);
+    // Residents once shared six instanced draws. Each is now one skinned person, culled on its own (frustum and
+    // distance), so the scenery keeps the same budget and residents add one draw per person actually in view.
+    const scenery = parts.filter((part) => part !== residents.group);
+    expect(scenery.reduce((total, part) => total + meshesOf(part).length, 0) + 6).toBeLessThanOrEqual(110);
+    const people = meshesOf(residents.group);
+    expect(people).toHaveLength(residents.agents.length);
+    expect(people.every((person) => person.frustumCulled)).toBe(true);
   });
 
   it("builds Lanternfall with its lighthouse lamp and rim gear ticking, and puts it where the flight world expects", () => {

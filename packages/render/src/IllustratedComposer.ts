@@ -1,5 +1,7 @@
 import {
   Camera,
+  ClampToEdgeWrapping,
+  Data3DTexture,
   DepthTexture,
   FloatType,
   GLSL3,
@@ -9,14 +11,50 @@ import {
   NearestFilter,
   OrthographicCamera,
   PlaneGeometry,
+  RGBAFormat,
   Scene,
   ShaderMaterial,
+  UnsignedByteType,
   Vector2,
   WebGLRenderer,
   WebGLRenderTarget,
 } from "three";
 
 export type DebugView = "final" | "color" | "surface-id" | "depth" | "normals" | "mask";
+
+/** A colour grade: maps a display (sRGB, 0..1) colour to the display colour it should become. */
+export type GradeFunction = (r: number, g: number, b: number) => readonly [number, number, number];
+
+/**
+ * Bakes a grade into a size^3 colour look-up table (8 bits a channel, trilinear filtered) for the composer's `lut`
+ * style. The caller owns the texture and disposes of it.
+ */
+export function createGradeLut(grade: GradeFunction, size = 33): Data3DTexture {
+  const n = Math.max(2, Math.min(64, Math.round(size)));
+  const data = new Uint8Array(n * n * n * 4);
+  const byte = (value: number) => Math.round(Math.min(1, Math.max(0, Number.isFinite(value) ? value : 0)) * 255);
+  for (let b = 0; b < n; b += 1) for (let g = 0; g < n; g += 1) for (let r = 0; r < n; r += 1) {
+    const [gr, gg, gb] = grade(r / (n - 1), g / (n - 1), b / (n - 1));
+    const i = ((b * n + g) * n + r) * 4;
+    data[i] = byte(gr); data[i + 1] = byte(gg); data[i + 2] = byte(gb); data[i + 3] = 255;
+  }
+  const texture = new Data3DTexture(data, n, n, n);
+  texture.format = RGBAFormat;
+  texture.type = UnsignedByteType;
+  texture.minFilter = LinearFilter;
+  texture.magFilter = LinearFilter;
+  texture.wrapS = texture.wrapT = texture.wrapR = ClampToEdgeWrapping;
+  texture.unpackAlignment = 1;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+/** A table that changes nothing, owned (and disposed of) by the composer. */
+function identityLut(size: number): Data3DTexture {
+  const texture = createGradeLut((r, g, b) => [r, g, b], size);
+  texture.userData.composerOwned = true;
+  return texture;
+}
 
 const outlineVertex = /* glsl */ `
   out vec2 vUv;
@@ -31,6 +69,7 @@ const outlineFragment = /* glsl */ `
   uniform sampler2D tColor;
   uniform sampler2D tInfo;
   uniform sampler2D tDepth;
+  uniform highp sampler3D tLut;
   uniform vec2 uResolution;
   uniform vec3 uInk;
   uniform float uThickness;
@@ -42,6 +81,9 @@ const outlineFragment = /* glsl */ `
   uniform float uFadeMin;
   uniform float uInkTint;
   uniform float uGrade;
+  uniform float uLut;
+  uniform float uLutSize;
+  uniform int uLines;
   uniform float uBoil;
   uniform float uBoilFrame;
   uniform int uDebug;
@@ -56,7 +98,53 @@ const outlineFragment = /* glsl */ `
     return 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
   }
 
+  /** Inverse of the materials' encodeNormal (a Lambert azimuthal projection of the view-space normal). */
+  vec3 decodeNormal(vec2 encoded) {
+    vec2 f = encoded * 4.0 - 2.0;
+    float l = dot(f, f);
+    return vec3(f * sqrt(max(0.0, 1.0 - l / 4.0)), 1.0 - l / 2.0);
+  }
+
+  /**
+   * "Drawn" lines, as an illustrator inks them: sample a small cross around the pixel and draw where the surface,
+   * its distance or its facing changes across it. The pen pressure (the mask a material writes) is taken from the
+   * nearest of the samples, so a silhouette is inked with the stroke of whatever stands in front, gaps included.
+   * Depth steps count relative to distance and need to be bigger on surfaces seen edge-on (a long street seen at a
+   * grazing angle does not sprout lines).
+   */
+  float drawnEdgeAt(vec2 uv) {
+    vec2 px = uThickness * clamp(uResolution.y / 1000.0, 0.8, 1.8) / uResolution;
+    vec2 offsets[5] = vec2[5](vec2(0.0), vec2(-px.x, 0.0), vec2(px.x, 0.0), vec2(0.0, -px.y), vec2(0.0, px.y));
+    float ids[5];
+    float depths[5];
+    float masks[5];
+    vec3 normals[5];
+    for (int i = 0; i < 5; i++) {
+      vec2 at = uv + offsets[i];
+      vec4 info = texture(tInfo, at);
+      ids[i] = texture(tColor, at).a;
+      depths[i] = linearDepth(at);
+      normals[i] = decodeNormal(info.gb);
+      masks[i] = info.a;
+    }
+    float idChange = length(vec2(ids[1] - ids[2], ids[3] - ids[4]));
+    float depthChange = length(vec2(depths[1] - depths[2], depths[3] - depths[4])) / max(depths[0], 1e-3);
+    vec3 n = normals[0];
+    float normalChange = length(vec2(distance(normals[1], n) - distance(normals[2], n), distance(normals[3], n) - distance(normals[4], n)));
+    float edgeOn = 1.0 + (1.0 - clamp(n.z, 0.0, 1.0)) * 5.0;
+    float edge = smoothstep(0.0012, 0.0026, idChange)
+      + smoothstep(0.045 * edgeOn, 0.075 * edgeOn, depthChange)
+      + smoothstep(0.32, 0.5, normalChange);
+    float mask = masks[0];
+    float nearest = depths[0];
+    for (int i = 1; i < 5; i++) {
+      if (depths[i] < nearest) { nearest = depths[i]; mask = masks[i]; }
+    }
+    return clamp(edge, 0.0, 1.0) * max(mask, 0.0);
+  }
+
   float edgeAt(vec2 uv, float centreDepth) {
+    if (uLines == 1) return drawnEdgeAt(uv);
     // Lines keep the same on-screen weight at any resolution.
     vec2 px = uThickness * clamp(uResolution.y / 1000.0, 0.8, 1.8) / uResolution;
     vec4 c = texture(tColor, uv);
@@ -124,6 +212,26 @@ const outlineFragment = /* glsl */ `
     return mix(c, graded, uGrade);
   }
 
+  vec3 linearToDisplay(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+  }
+
+  vec3 displayToLinear(vec3 c) {
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+  }
+
+  /**
+   * A colour look-up table, indexed and filled with display (sRGB) colours: the whole image is regraded through it,
+   * so every surface, shadow and line shares one palette. uLut blends it in (0 leaves the image as it was).
+   */
+  vec3 lookUp(vec3 linear) {
+    vec3 display = linearToDisplay(linear);
+    float scale = (uLutSize - 1.0) / uLutSize;
+    vec3 graded = texture(tLut, display * scale + 0.5 / uLutSize).rgb;
+    return mix(linear, displayToLinear(graded), uLut);
+  }
+
   void main() {
     vec4 color = texture(tColor, vUv);
     vec4 info = texture(tInfo, vUv);
@@ -134,22 +242,37 @@ const outlineFragment = /* glsl */ `
     if (uDebug == 4) { outColor = vec4(info.gb, 1.0, 1.0); return; }
     if (uDebug == 5) { outColor = vec4(vec3(info.a), 1.0); return; }
     vec2 lineUv = vUv + boilOffset(vUv);
-    float edge = smoothstep(0.18, 0.74, edgeAt(lineUv, uBoil > 0.0 ? linearDepth(lineUv) : depth));
+    float raw = edgeAt(lineUv, uBoil > 0.0 ? linearDepth(lineUv) : depth);
+    // Drawn lines are already shaped; classic lines are thresholded here.
+    float edge = uLines == 1 ? raw : smoothstep(0.18, 0.74, raw);
     // Far lines soften into the haze; the ink takes some colour from what it outlines.
     edge *= mix(1.0, uFadeMin, smoothstep(uFadeNear, uFadeFar, depth));
     vec3 ink = mix(uInk, color.rgb * 0.36, uInkTint);
-    vec3 inked = mix(color.rgb, ink, edge * 0.92);
-    outColor = linearToOutputTexel(vec4(grade(inked, vUv), 1.0));
+    vec3 inked = mix(color.rgb, ink, edge * (uLines == 1 ? 1.0 : 0.92));
+    vec3 graded = uLut > 0.0 ? lookUp(inked) : grade(inked, vUv);
+    outColor = linearToOutputTexel(vec4(graded, 1.0));
   }
 `;
 
 /**
- * How the line pass draws: lines fade between fadeNear and fadeFar (to fadeMin of full strength), take inkTint of their
- * colour from what they outline, grade (0..1) the image, and boil (wobble by up to `boil` pixels, 0..3, redrawn
- * BOIL_FPS times a second as `setTime` advances) like hand-inked animation.
+ * How lines are found:
+ * - "classic": wherever the surface id, distance or facing jumps next to the pixel; every material inks evenly.
+ * - "drawn": as an illustrator inks. A cross of samples finds where the surface, its relative distance or its facing
+ *   changes. Small surface-id steps count, so painted patches get outlines. Edge-on surfaces need bigger distance
+ *   steps. Each material's pen pressure (its line mask, with gaps) comes from whatever stands in front.
  */
-export type IllustratedStyle = { fadeNear: number; fadeFar: number; fadeMin: number; inkTint: number; grade: number; boil: number };
-const DEFAULT_STYLE: IllustratedStyle = { fadeNear: 1e6, fadeFar: 2e6, fadeMin: 1, inkTint: 0, grade: 0, boil: 0 };
+export type LineStyle = "classic" | "drawn";
+
+/**
+ * How the line pass draws: lines are found as `lines` says, fade between fadeNear and fadeFar (to fadeMin of full
+ * strength), take inkTint of their colour from what they outline, grade (0..1) the image with the built-in grade or
+ * regrade it through a look-up table (`lut`, 0..1, see setGradeLut), and boil (wobble by up to `boil` pixels, 0..3,
+ * redrawn BOIL_FPS times a second as `setTime` advances) like hand-inked animation.
+ */
+export type IllustratedStyle = {
+  lines: LineStyle; fadeNear: number; fadeFar: number; fadeMin: number; inkTint: number; grade: number; lut: number; boil: number;
+};
+const DEFAULT_STYLE: IllustratedStyle = { lines: "classic", fadeNear: 1e6, fadeFar: 2e6, fadeMin: 1, inkTint: 0, grade: 0, lut: 0, boil: 0 };
 /** How many times a second the line boil is redrawn: on "eights", like hand-drawn animation. */
 export const BOIL_FPS = 8;
 /** Boil frames repeat after this many (keeps the seed small enough for exact float maths in the shader). */
@@ -196,6 +319,11 @@ export class IllustratedComposer {
         uFadeMin: { value: DEFAULT_STYLE.fadeMin },
         uInkTint: { value: DEFAULT_STYLE.inkTint },
         uGrade: { value: DEFAULT_STYLE.grade },
+        uLines: { value: 0 },
+        // A sampler always needs a texture; this 1x1x1 table is never read while uLut is 0.
+        tLut: { value: identityLut(2) },
+        uLut: { value: DEFAULT_STYLE.lut },
+        uLutSize: { value: 2 },
         uBoil: { value: DEFAULT_STYLE.boil },
         uBoilFrame: { value: 0 },
         uDebug: { value: 0 },
@@ -221,6 +349,12 @@ export class IllustratedComposer {
   setDebugView(view: DebugView) { this.material.uniforms.uDebug!.value = debugIndex[view]; }
   setThickness(value: number) { this.material.uniforms.uThickness!.value = Math.max(0.5, value); }
 
+  /** The ink colour (linear RGB components, as three's Color holds them). */
+  setInk(color: { r: number; g: number; b: number }) {
+    if (![color.r, color.g, color.b].every(Number.isFinite)) return;
+    this.material.uniforms.uInk!.value = { x: color.r, y: color.g, z: color.b };
+  }
+
   /** Line fading, ink tint and colour grade; anything left out keeps its current value. Defaults: no fade, flat ink, no grade. */
   setStyle(style: Partial<IllustratedStyle>) {
     const uniforms = this.material.uniforms;
@@ -234,7 +368,22 @@ export class IllustratedComposer {
     if (finite(style.fadeMin)) uniforms.uFadeMin!.value = Math.min(1, Math.max(0, style.fadeMin));
     if (finite(style.inkTint)) uniforms.uInkTint!.value = Math.min(1, Math.max(0, style.inkTint));
     if (finite(style.grade)) uniforms.uGrade!.value = Math.min(1, Math.max(0, style.grade));
+    if (finite(style.lut)) uniforms.uLut!.value = Math.min(1, Math.max(0, style.lut));
+    if (style.lines === "classic" || style.lines === "drawn") uniforms.uLines!.value = style.lines === "drawn" ? 1 : 0;
     if (style.boil !== undefined && Number.isFinite(style.boil)) uniforms.uBoil!.value = Math.min(3, Math.max(0, style.boil));
+  }
+
+  /**
+   * The colour look-up table the `lut` style blends in (see createGradeLut). The composer does not own it: whoever
+   * made it disposes of it. Passing null goes back to an identity table (and `lut` then changes nothing).
+   */
+  setGradeLut(table: Data3DTexture | null) {
+    const uniforms = this.material.uniforms;
+    const previous = uniforms.tLut!.value as Data3DTexture;
+    if (previous.userData.composerOwned) previous.dispose();
+    const next = table ?? identityLut(2);
+    uniforms.tLut!.value = next;
+    uniforms.uLutSize!.value = next.image.width;
   }
 
   /**
@@ -253,8 +402,9 @@ export class IllustratedComposer {
   get style(): IllustratedStyle {
     const uniforms = this.material.uniforms;
     return {
+      lines: uniforms.uLines!.value === 1 ? "drawn" : "classic",
       fadeNear: uniforms.uFadeNear!.value, fadeFar: uniforms.uFadeFar!.value, fadeMin: uniforms.uFadeMin!.value,
-      inkTint: uniforms.uInkTint!.value, grade: uniforms.uGrade!.value, boil: uniforms.uBoil!.value,
+      inkTint: uniforms.uInkTint!.value, grade: uniforms.uGrade!.value, lut: uniforms.uLut!.value, boil: uniforms.uBoil!.value,
     };
   }
 
@@ -282,6 +432,8 @@ export class IllustratedComposer {
 
   dispose() {
     this.target.dispose();
+    const table = this.material.uniforms.tLut!.value as Data3DTexture;
+    if (table.userData.composerOwned) table.dispose();
     this.material.dispose();
     for (const object of this.quadScene.children) {
       if (object instanceof Mesh) object.geometry.dispose();

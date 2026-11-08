@@ -46,15 +46,15 @@ function advanceToTask(runner: TaskRunner, n: number) {
 describe("task definitions", () => {
   it("lists the three tasks with exact copy", () => {
     expect(TASKS.map((t) => t.id)).toEqual(["market-parcel", "oil-escapement", "lanternfall-letter"]);
-    expect(TASKS.map((t) => t.title)).toEqual(["Market parcel", "Oil the escapement", "Letter for Lanternfall"]);
+    expect(TASKS.map((t) => t.title)).toEqual(["Market parcel", "Westminster clock", "Letter for Lanternfall"]);
     expect(TASKS[2]!.steps.map((s) => [s.kind, s.anchor, s.prompt])).toEqual([
       ["pickup", "port-letter", "E · Collect letter"],
       ["launch", "home-launcher", "E · Launch"],
       ["land", "lanternfall-gate", null],
       ["deliver", "keeper-door", "E · Deliver letter"],
     ]);
-    expect(TASKS[0]!.steps[0]!.label).toBe("Pick up the parcel at Rivet Market");
-    expect(TASKS[1]!.steps[0]!.label).toBe("Oil The Great Escapement in time with the tick");
+    expect(TASKS[0]!.steps[0]!.label).toBe("Pick up the parcel at Covent Garden");
+    expect(TASKS[1]!.steps[0]!.label).toBe("Oil the Westminster clock in time with the tick");
   });
 
   it("exposes the tuning constants", () => {
@@ -219,9 +219,9 @@ describe("tick step", () => {
 
   it("appends progress to the step label", () => {
     const r = ticking();
-    expect(r.snapshot(START).stepLabel).toBe("Oil The Great Escapement in time with the tick (0/3)");
+    expect(r.snapshot(START).stepLabel).toBe("Oil the Westminster clock in time with the tick (0/3)");
     r.interact(7_000);
-    expect(r.snapshot(START).stepLabel).toBe("Oil The Great Escapement in time with the tick (1/3)");
+    expect(r.snapshot(START).stepLabel).toBe("Oil the Westminster clock in time with the tick (1/3)");
   });
 });
 
@@ -304,12 +304,12 @@ describe("snapshot", () => {
     const s = r.snapshot(START + 1_500);
     expect(s).toMatchObject({
       taskIndex: 0, stepIndex: 0, taskId: "market-parcel", title: "Market parcel",
-      stepLabel: "Pick up the parcel at Rivet Market", prompt: "E · Pick up parcel",
+      stepLabel: "Pick up the parcel at Covent Garden", prompt: "E · Pick up parcel",
       target: "market-parcel", targetPosition: at(0, 0, 0), tickHits: 0, done: false, elapsedMs: 1_500,
     });
     expect(s.checklist).toEqual([
-      { label: "Pick up the parcel at Rivet Market", done: false, current: true },
-      { label: "Deliver it to The Bell Observatory", done: false, current: false },
+      { label: "Pick up the parcel at Covent Garden", done: false, current: true },
+      { label: "Deliver it to St Paul's", done: false, current: false },
     ]);
   });
 

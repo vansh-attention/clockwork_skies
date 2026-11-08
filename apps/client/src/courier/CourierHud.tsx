@@ -6,6 +6,7 @@ import { TASKS, TICK_HITS_NEEDED } from "./tasks";
 import "./courier.css";
 
 export type CourierHudProps = {
+  roam?: boolean;
   hud: CourierHudData;
   /** Town clock text shown in the header pill. */
   time: string;
@@ -62,10 +63,19 @@ export function splitPrompt(prompt: string): { key: string | null; action: strin
  */
 export const keepTownFocus = (event: { preventDefault(): void }): void => event.preventDefault();
 
-export function CourierHud({ hud, time, guideOpen = false, onGuide, onRestart, onLookAround }: CourierHudProps) {
+export function CourierHud({ hud, time, guideOpen = false, onGuide, onRestart, onLookAround, roam = false }: CourierHudProps) {
   const { task, marker, feedback } = hud;
   const againRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => { if (task.done) againRef.current?.focus(); }, [task.done]);
+  useEffect(() => { if (!roam && task.done) againRef.current?.focus(); }, [task.done, roam]);
+  if (roam) return <>
+    <header className="flight-header city-header courier-header">
+      <div className="wordmark"><span className="mark" aria-hidden="true">L</span><strong>LITTLE LONDON</strong></div>
+      <div className="phase"><span>ON FOOT</span><b>{time}</b></div>
+      <button onMouseDown={keepTownFocus} onClick={onGuide} aria-expanded={guideOpen}>GUIDE</button>
+    </header>
+    <button className="island-map-button" onMouseDown={keepTownFocus} onClick={onLookAround}>VIEW THE ISLAND ↗</button>
+    <div className="courier-hint">WASD WALK · SHIFT RUN · SPACE JUMP · DRAG LOOK · SCROLL ZOOM</div>
+  </>;
   const currentKind = TASKS[task.taskIndex]?.steps[task.stepIndex]?.kind;
   const markerX = clampPercent(marker.x);
   const markerY = clampPercent(marker.y);
@@ -80,7 +90,7 @@ export function CourierHud({ hud, time, guideOpen = false, onGuide, onRestart, o
 
   return <>
     <header className="flight-header city-header courier-header">
-      <div className="wordmark"><span className="mark" aria-hidden="true">C</span><strong>CLOCKWORK SKIES</strong></div>
+      <div className="wordmark"><span className="mark" aria-hidden="true">C</span><strong>CLOCKWORK LONDON</strong></div>
       <div className="phase"><span>{task.title}</span><b>{time}</b></div>
       <button onMouseDown={keepTownFocus} onClick={onGuide} aria-expanded={guideOpen}>GUIDE</button>
     </header>

@@ -1,29 +1,32 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { IllustratedComposer, illustratedEnvironment, resetIllustratedEnvironment, type DebugView } from "@clockwork/render";
+import { createGradeLut, IllustratedComposer, illustratedEnvironment, resetIllustratedEnvironment, type DebugView } from "@clockwork/render";
 import { buildCity, handsGeometry, type BuiltCity } from "./buildCity";
 import { anchorSwing, cycleMs, handAngles, tickValue } from "./clockwork";
-import { districtAt } from "./layout";
-import { CourierController, type CourierHud } from "../courier/CourierController";
+import { createCityLayout, districtAt } from "./layout";
+import { CourierController, type CourierHud, type CourierMotion } from "../courier/CourierController";
 import { buildLanternfall, buildLaunchersAndGates } from "../courier/outpost";
 import type { Spinner } from "./buildCity";
 import { enableShadows } from "./kit";
 import { Sun } from "./sun";
 import { SKY_COLORS, Sky } from "./sky";
+import { ATMOSPHERE_RATE, blendLook, FOG_NEAR, GROUND_LIGHT, INK, londonGrade, SKY_LIGHT } from "./atmosphere";
 import { buildAmbient, type BuiltAmbient } from "./ambient";
 import { createHillTownWalkWorld } from "../courier/walkWorld";
+import { buildResidents, type BuiltResidents } from "./residents";
 
 export type CityMode = "title" | "explore" | "play";
 export type Nudge = "left" | "right" | "up" | "down" | "in" | "out";
-export type CourierDiagnostics = { mode: "walk" | "fly"; position: number[]; taskId: string | null; stepIndex: number; done: boolean; prompt: string | null };
+export type CourierDiagnostics = { mode: "walk" | "fly"; position: number[]; taskId: string | null; stepIndex: number; done: boolean; prompt: string | null; motion: CourierMotion };
 export type CityDiagnostics = {
   mode: CityMode; focused: number | null; calls: number; triangles: number; camera: number[]; target: number[]; courier: CourierDiagnostics | null;
+  population: number;
   /** Names of the scene's top-level parts (town, Lanternfall, launchers and gates, courier...), so tests can see what is drawn. */
   parts: string[];
 };
 export type CitySceneOptions = { onPick: (district: number | null) => void; onError: (message: string) => void; onCourierHud?: (hud: CourierHud) => void };
-type CourierDebug = { teleportToObjective(): void };
-type CityWindow = Window & { __CLOCKWORK_CITY__?: () => CityDiagnostics; __CLOCKWORK_COURIER__?: CourierDebug };
+type CourierDebug = { teleportToObjective(): void; teleportTo(x: number, z: number): void };
+type CityWindow = Window & { __CLOCKWORK_CITY__?: () => CityDiagnostics; __CLOCKWORK_COURIER__?: CourierDebug; render_game_to_text?: () => string };
 /** The OrbitControls settings the courier camera changes; they are put back when play ends. */
 type ControlsSettings = Pick<OrbitControls, "enablePan" | "minDistance" | "maxDistance" | "maxPolarAngle" | "autoRotate" | "enabled">;
 type Pose = { position: THREE.Vector3; target: THREE.Vector3 };
@@ -31,11 +34,11 @@ type Pose = { position: THREE.Vector3; target: THREE.Vector3 };
 type Flight = { from: THREE.Spherical; to: THREE.Spherical; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; startedAt: number; durationMs: number };
 
 // The title view sits low enough to show the rock the town floats on.
-const TITLE_TARGET = new THREE.Vector3(0, -60, 0);
-const TITLE_RADIUS = 1420;
+const TITLE_TARGET = new THREE.Vector3(0, 0, 0);
+const TITLE_RADIUS = 600;
 const TITLE_POLAR = 1.14;
 const OVERVIEW_TARGET = new THREE.Vector3(0, 20, 0);
-const OVERVIEW_RADIUS = 1080;
+const OVERVIEW_RADIUS = 520;
 const OVERVIEW_POLAR = 1.08;
 /** Camera flights swing around this point, so they never pass through the tower. */
 const FLIGHT_PIVOT = new THREE.Vector3(0, 40, 0);
@@ -44,19 +47,15 @@ const TITLE_SHIFT = -0.2;
 /** The courier HUD is republished at most this often (seconds of frame time). */
 const HUD_INTERVAL = 0.1;
 const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
-/** Squared-exponential fog density for the illustrated materials (see @clockwork/render illustratedEnvironment). */
-const FOG_DENSITY = 0.00032;
 /** Half-size of the sun's shadow square: tight and crisp around the courier, wider in flight, the whole island otherwise. */
-const SHADOW_REACH = { walk: 90, fly: 220, town: 520 } as const;
+const SHADOW_REACH = { walk: 55, fly: 100, town: 210 } as const;
 /** Seconds between shadow redraws when nothing but the clockwork moves. */
 const SHADOW_REFRESH = 0.1;
 /**
- * While walking, tree canopies between the camera and the courier open a window this wide (world units, around the
- * sight line to a point this far above the courier's feet), so leaves never fill the view.
+ * The ink: drawn lines (see @clockwork/render LineStyle) graded through the London look-up table, boiling about a
+ * pixel on eights over the town. Fades, tint, weight and haze follow the camera between town and street (atmosphere.ts).
  */
-const SEE_THROUGH = { radius: 3.2, lift: 1.8 } as const;
-/** The ink: lines soften into the haze, take some colour from what they outline, and boil about a pixel on eights. */
-const LINE_STYLE = { fadeNear: 220, fadeFar: 2200, fadeMin: 0.35, inkTint: 0.45, grade: 1, boil: 0.9 } as const;
+const LINE_STYLE = { lines: "drawn", grade: 0, lut: 1, boil: 0.9 } as const;
 /** Toward the sun: a mid-morning sun from the south-east-ish, low enough for long, graphic shadows. */
 const SUN_DIRECTION = new THREE.Vector3(0.52, 0.6, 0.6);
 
@@ -67,6 +66,7 @@ export class CityScene {
   private readonly camera = new THREE.PerspectiveCamera(34, 1, 2, 7000);
   private readonly controls: OrbitControls;
   private readonly city: BuiltCity;
+  private readonly layout = createCityLayout();
   /** Every part that turns one tick per second: the town's gears plus Lanternfall's rim gear and lamp. */
   private readonly spinners: Spinner[];
   private readonly spinBase: number[];
@@ -75,12 +75,18 @@ export class CityScene {
   private readonly sun = new Sun();
   private readonly sky = new Sky();
   private readonly ambient: BuiltAmbient;
+  private readonly residents: BuiltResidents;
   private readonly focus = new THREE.Vector3();
   private elapsed = 0;
   private shadowAge = 0;
   private shadowDrawn = false;
   private readonly raycaster = new THREE.Raycaster();
   private readonly debug: (() => CityDiagnostics) | null;
+  private readonly textState = () => JSON.stringify({
+    coordinates: "island-local; origin at the central square; +Y up, north -Z, east +X",
+    ...this.diagnostics(),
+    objective: null,
+  });
   private mode: CityMode = "title";
   private focused: number | null = null;
   private flight: Flight | null = null;
@@ -99,6 +105,10 @@ export class CityScene {
   private courierDebug: CourierDebug | null = null;
   private pointerStart: { x: number; y: number } | null = null;
   private stats = { calls: 0, triangles: 0 };
+  /** The finished look's colour grade, owned here (the composer only borrows it). */
+  private readonly gradeLut = createGradeLut(londonGrade);
+  /** 0 = the town look, 1 = the street look; eased toward the camera's situation (see atmosphere.ts). */
+  private streetLook = 0;
 
   constructor(private readonly container: HTMLElement, private readonly options: CitySceneOptions) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
@@ -113,36 +123,41 @@ export class CityScene {
       this.renderer.shadowMap.autoUpdate = false;
       // The composer renders twice per frame; reset by hand so the totals cover the whole frame.
       this.renderer.info.autoReset = false;
-      canvas.setAttribute("aria-label", "Clockwork Skies hill town. Drag to look around; arrow keys circle the town.");
+      canvas.setAttribute("aria-label", "Little London island. Drag to look around; arrow keys circle the island.");
       canvas.tabIndex = 0;
       container.appendChild(canvas);
       this.composer = new IllustratedComposer(this.renderer);
-      this.composer.setThickness(1.15);
-      // Lines soften into the distance and take some colour from what they outline; the whole image is graded.
+      // Drawn lines in a dark slate ink, and the whole image regraded through the London table.
       this.composer.setStyle(LINE_STYLE);
+      this.composer.setInk(new THREE.Color(INK));
+      this.composer.setGradeLut(this.gradeLut);
+      this.applyLook();
       // The painted dome is the sky; the far fog matches its horizon so distant islands melt into it.
       this.world.add(this.sky.dome);
       illustratedEnvironment.uFogFar.value.set(SKY_COLORS.horizon);
-      this.city = buildCity();
+      illustratedEnvironment.uFogNear.value.set(FOG_NEAR);
+      illustratedEnvironment.uSkyLight.value.copy(SKY_LIGHT);
+      illustratedEnvironment.uGroundLight.value.copy(GROUND_LIGHT);
+      this.city = buildCity(this.layout);
       this.world.add(this.city.group);
       // Lanternfall, the home launcher and both landing gates share the town's palette, so they cost no new surface ids.
-      const outposts = [buildLanternfall(this.city.palette), buildLaunchersAndGates(this.city.palette)];
+      const outposts = this.layout.plan ? [] : [buildLanternfall(this.city.palette), buildLaunchersAndGates(this.city.palette)];
       for (const outpost of outposts) this.world.add(outpost.group);
       for (const root of [this.city.group, ...outposts.map((outpost) => outpost.group)]) enableShadows(root);
       // Grass, pennants, birds and chimney smoke (their own shadow settings: only the pennants cast).
-      this.ambient = buildAmbient(this.city.palette, createHillTownWalkWorld());
+      this.ambient = buildAmbient(this.city.palette, createHillTownWalkWorld(this.layout), this.layout);
       this.world.add(this.ambient.group);
+      this.residents = buildResidents(this.city.palette, this.layout);
+      this.world.add(this.residents.group);
       this.world.add(...this.sun.objects);
-      // Aerial perspective: barely there across the town, strong by Lanternfall (2.4 km).
-      illustratedEnvironment.uFogDensity.value = FOG_DENSITY;
       illustratedEnvironment.uSunDirection.value.copy(SUN_DIRECTION);
       this.spinners = [...this.city.spinners, ...outposts.flatMap((outpost) => outpost.spinners)];
       this.spinBase = this.spinners.map((spinner) => spinner.object.rotation[spinner.axis]);
-      this.anchorBase = this.city.anchor.rotation.z;
+      this.anchorBase = this.city.anchor?.rotation.z ?? 0;
       this.camera.position.setFromSphericalCoords(TITLE_RADIUS * this.reach(), TITLE_POLAR, -0.8).add(TITLE_TARGET);
       this.controls = new OrbitControls(this.camera, canvas);
       Object.assign(this.controls, {
-        enableDamping: true, dampingFactor: 0.08, minDistance: 150, maxDistance: 1800, minPolarAngle: 0.3, maxPolarAngle: 1.36,
+        enableDamping: true, dampingFactor: 0.08, minDistance: 35, maxDistance: 800, minPolarAngle: 0.3, maxPolarAngle: 1.36,
         screenSpacePanning: false, rotateSpeed: 0.6, zoomSpeed: 0.8, panSpeed: 0.6, autoRotateSpeed: 0.35,
       });
       this.controls.target.copy(TITLE_TARGET);
@@ -158,6 +173,7 @@ export class CityScene {
     window.addEventListener("resize", this.resize);
     document.addEventListener("visibilitychange", this.onVisibility);
     this.debug = new URLSearchParams(window.location.search).get("debug") === "1" ? () => this.diagnostics() : null;
+    (window as CityWindow).render_game_to_text = this.textState;
     if (this.debug) {
       this.courierDebug = this.createCourierDebug();
       (window as CityWindow).__CLOCKWORK_CITY__ = this.debug;
@@ -220,7 +236,10 @@ export class CityScene {
   }
 
   private createCourierDebug(): CourierDebug {
-    return { teleportToObjective: () => { if (this.mode === "play") this.courier?.teleportToObjective(); } };
+    return {
+      teleportToObjective: () => { if (this.mode === "play") this.courier?.teleportToObjective(); },
+      teleportTo: (x, z) => { if (this.mode === "play") this.courier?.teleportTo(x, z); },
+    };
   }
 
   /** Pause or resume courier input (guide open, round complete). A no-op without a controller. */
@@ -236,6 +255,8 @@ export class CityScene {
       maxPolarAngle: controls.maxPolarAngle, autoRotate: controls.autoRotate, enabled: controls.enabled,
     };
     this.courier ??= new CourierController({
+      layout: this.layout,
+      freeRoam: !!this.layout.plan,
       world: this.world, camera: this.camera, controls, palette: this.city.palette, canvas: this.canvas, reducedMotion: () => this.reducedMotion,
     });
     this.hudElapsed = 0;
@@ -302,6 +323,7 @@ export class CityScene {
 
   diagnostics(): CityDiagnostics {
     return { mode: this.mode, focused: this.focused, calls: this.stats.calls, triangles: this.stats.triangles,
+      population: this.residents.agents.length,
       camera: this.camera.position.toArray(), target: this.controls.target.toArray(), courier: this.courierDiagnostics(),
       parts: this.world.children.map((child) => child.name).filter((name) => name.length > 0) };
   }
@@ -309,7 +331,7 @@ export class CityScene {
   private courierDiagnostics(): CourierDiagnostics | null {
     if (this.mode !== "play" || !this.courier) return null;
     const { mode, position, task, prompt } = this.courier.snapshot();
-    return { mode, position: [position.x, position.y, position.z], taskId: task.taskId, stepIndex: task.stepIndex, done: task.done, prompt };
+    return { mode, position: [position.x, position.y, position.z], taskId: this.layout.plan ? null : task.taskId, stepIndex: this.layout.plan ? 0 : task.stepIndex, done: this.layout.plan ? false : task.done, prompt: this.layout.plan ? null : prompt, motion: this.courier.motion() };
   }
 
   private applyMode() {
@@ -322,7 +344,7 @@ export class CityScene {
     this.controls.enabled = this.mode === "explore";
     this.controls.autoRotate = this.mode === "title" && !this.reducedMotion;
     // The title camera stands further back than anyone may zoom out while exploring.
-    this.controls.maxDistance = this.mode === "title" ? 2600 : 1800;
+    this.controls.maxDistance = this.layout.plan ? (this.mode === "title" ? 1000 : 800) : (this.mode === "title" ? 2600 : 1800);
     this.updateShiftTarget();
     this.applyShift();
   }
@@ -334,7 +356,7 @@ export class CityScene {
       // Wide title: slide the town right of the title card.
       x: this.mode === "title" && width >= 900 ? TITLE_SHIFT : 0,
       // Lift a focused landmark above its district card; on phones, drop the title town below the title card.
-      y: this.mode === "title" ? (narrow ? -0.2 : 0) : this.focused !== null ? (narrow ? 0.2 : 0.12) : 0,
+      y: this.mode === "title" ? (narrow ? -0.04 : 0) : this.focused !== null ? (narrow ? 0.2 : 0.12) : 0,
     };
     if (this.reducedMotion) this.shift = { ...this.shiftTarget };
   }
@@ -359,10 +381,12 @@ export class CityScene {
   private districtPose(index: number): Pose {
     const point = this.city.focusPoints[index];
     if (!point) return this.orbitPose(OVERVIEW_RADIUS, OVERVIEW_POLAR, OVERVIEW_TARGET);
-    const outward = new THREE.Vector3(point.x, 0, point.z).normalize();
+    const rotation = this.layout.landmarks[index]?.rotation;
+    const outward = rotation === undefined ? new THREE.Vector3(point.x, 0, point.z).normalize()
+      : new THREE.Vector3(Math.sin(rotation), 0, Math.cos(rotation));
     const reach = this.reach();
     const target = point.clone().addScaledVector(outward, -12).add(new THREE.Vector3(0, 6, 0));
-    return { position: target.clone().addScaledVector(outward, 230 * reach).add(new THREE.Vector3(0, 140 * reach, 0)), target };
+    return { position: target.clone().addScaledVector(outward, 85 * reach).add(new THREE.Vector3(0, 55 * reach, 0)), target };
   }
 
   private flyTo(pose: Pose) {
@@ -422,6 +446,7 @@ export class CityScene {
 
   /** Hands move once a minute; every gear moves one tick per second. */
   private updateClockwork(now: number) {
+    if (this.layout.plan) return;
     const minute = Math.floor(now / 60_000);
     if (minute !== this.minuteShown) {
       this.minuteShown = minute;
@@ -436,12 +461,13 @@ export class CityScene {
     this.spinners.forEach((spinner, index) => {
       spinner.object.rotation[spinner.axis] = (this.spinBase[index] ?? 0) + ticks * spinner.step;
     });
-    this.city.anchor.rotation.z = this.anchorBase + anchorSwing(cycle);
+    if (this.city.anchor) this.city.anchor.rotation.z = this.anchorBase + anchorSwing(cycle);
   }
 
   private animate = () => {
     this.frame = requestAnimationFrame(this.animate);
-    const dt = Math.min(this.clock.getDelta(), 0.05);
+    const rawDt = this.clock.getDelta();
+    const dt = Math.min(rawDt, 0.2);
     if (this.mode === "play") this.stepPlay(dt);
     else if (this.flight) this.stepFlight(performance.now());
     else { this.controls.update(dt); if (this.mode === "explore") this.keepTargetInTown(); }
@@ -457,17 +483,37 @@ export class CityScene {
     if (!this.reducedMotion) this.elapsed += dt;
     illustratedEnvironment.uTime.value = this.elapsed;
     this.ambient.update(this.elapsed, tickValue(cycleMs(Date.now())), this.reducedMotion);
+    this.residents.update(this.elapsed, this.reducedMotion, this.camera.position);
     this.fitSun(dt);
-    this.updateSeeThrough();
     if (!this.reducedMotion) this.city.clouds.rotation.y += dt * 0.006;
     this.renderer.info.reset();
     this.sky.update(this.camera, this.elapsed, this.pixelRatio);
     // The scene clock stops under reduced motion, so the line boil holds still with it.
     this.composer.setTime(this.elapsed);
+    // Stable ink while walking: the deliberate eight-frame line boil otherwise looks like motion judder.
+    this.composer.setStyle({ boil: this.mode === "play" ? 0 : LINE_STYLE.boil });
+    this.easeLook(dt);
     this.composer.render(this.world, this.camera, [{ scene: this.sky.overlay, camera: this.camera }]);
     this.stats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
-    this.adaptResolution(dt);
+    this.adaptResolution(rawDt);
   };
+
+  /** Ease the air and the ink toward the street look while walking, and the town look otherwise (atmosphere.ts). */
+  private easeLook(dt: number) {
+    const target = this.mode === "play" && this.courier?.mode === "walk" ? 1 : 0;
+    if (this.streetLook === target) return;
+    const step = this.reducedMotion ? 1 : 1 - Math.exp(-ATMOSPHERE_RATE * Math.max(0, dt));
+    this.streetLook += (target - this.streetLook) * step;
+    if (Math.abs(this.streetLook - target) < 0.002) this.streetLook = target;
+    this.applyLook();
+  }
+
+  private applyLook() {
+    const look = blendLook(this.streetLook);
+    illustratedEnvironment.uFogDensity.value = look.fogDensity;
+    this.composer.setStyle(look.line);
+    this.composer.setThickness(look.thickness);
+  }
 
   /** Shadows where they matter: around the courier (or the plane) while playing, over the whole island otherwise. */
   private fitSun(dt: number) {
@@ -485,16 +531,6 @@ export class CityScene {
       this.renderer.shadowMap.needsUpdate = true;
       this.shadowAge = 0;
       this.shadowDrawn = true;
-    }
-  }
-
-  /** Point the canopies' see-through window at the walking courier; off in flight and outside play. */
-  private updateSeeThrough() {
-    const walking = this.mode === "play" && this.courier !== null && this.courier.mode === "walk";
-    illustratedEnvironment.uSeeThrough.value = walking ? SEE_THROUGH.radius : 0;
-    if (walking) {
-      this.courier!.focusPoint(illustratedEnvironment.uFocus.value);
-      illustratedEnvironment.uFocus.value.y += SEE_THROUGH.lift;
     }
   }
 
@@ -553,11 +589,14 @@ export class CityScene {
     this.sun?.dispose();
     this.sky?.dispose();
     resetIllustratedEnvironment();
+    this.residents.dispose();
     this.composer.dispose();
+    this.gradeLut.dispose();
     this.renderer.dispose();
     canvas.remove();
     const target = window as CityWindow;
     if (this.debug && target.__CLOCKWORK_CITY__ === this.debug) delete target.__CLOCKWORK_CITY__;
+    if (target.render_game_to_text === this.textState) delete target.render_game_to_text;
     if (this.courierDebug && target.__CLOCKWORK_COURIER__ === this.courierDebug) delete target.__CLOCKWORK_COURIER__;
   }
 }

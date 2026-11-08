@@ -6,7 +6,7 @@ import {
   type HouseSpec, type MaterialKey, type MaterialSource, type TreeSpec,
 } from "../city/kit";
 import type { Spinner } from "../city/buildCity";
-import { HOME_LAUNCH_SITE, ISLAND_RADIUS, angularGap, pick3, polarToXZ } from "../city/layout";
+import { HOME_LAUNCH_SITE, ISLAND_RADIUS, angularGap, createHillTownLayout, pick3, polarToXZ } from "../city/layout";
 import type { SkyWorld } from "./skyFlight";
 import type { IslandId } from "./tasks";
 import { createHillTownWalkWorld, type WalkWorld } from "./walkWorld";
@@ -327,7 +327,7 @@ const overlapsCircle = (circle: Circle, x: number, z: number, radius: number): b
 
 /** The home island's walk surface: the hill town, plus the launcher uprights at HOME_PAD. */
 export function createHomeWalkWorld(): WalkWorld {
-  const town = createHillTownWalkWorld();
+  const town = createHillTownWalkWorld(createHillTownLayout());
   const uprights = uprightCircles(HOME_PAD.position.x, HOME_PAD.position.z, HOME_PAD.yaw);
   return {
     surfaceAt: (x, z) => town.surfaceAt(x, z),

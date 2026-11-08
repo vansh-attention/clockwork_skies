@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
 import { createIllustratedMaterial, type IllustratedMaterialOptions } from "@clockwork/render";
 import { polarToXZ } from "./layout";
 
@@ -14,35 +14,49 @@ const UP = new THREE.Vector3(0, 1, 0);
 export type Swatch = Readonly<Omit<IllustratedMaterialOptions, "surfaceId">>;
 
 // A London palette: stock and red brick, white stucco, Portland stone, Welsh slate, iron black, river green, plane-tree
-// greens, with pillar-box red and gilt kept for accents. Most surfaces carry painted marks (see @clockwork/render
-// patterns) that fade out with distance, so far views read as calm masses and street level shows the courses.
+// greens, with pillar-box red and gilt kept for accents. Swatches give the lit colour only: the colour in shade follows
+// from it by rule (@clockwork/render shadeOf: same hue a touch warmer, same saturation, half the value), so every
+// surface shades the same way and shade stays coloured. Most surfaces carry painted marks (see @clockwork/render
+// patterns) that fade out with distance, so far views read as calm masses and street level shows the courses. Worn
+// stucco, light grass and plane bark ink their own painted patches, as an illustrator outlines a chipped wall.
 const SWATCHES = {
-  ground: { color: "#7ea56c", shadow: "#4e7356", grain: 0.02, pattern: "grass", patternColor: "#a3c27f" },
-  terrace: { color: "#8db57a", shadow: "#5d8063", pattern: "grass", patternColor: "#b2cf8c" },
-  paving: { color: "#d7d0bd", shadow: "#9a9686", outline: 0.6, pattern: "flags", patternColor: "#aca592", patternStrength: 0.55 },
-  stone: { color: "#e2dbc8", shadow: "#a8a493", pattern: "ashlar", patternColor: "#bab29c" },
-  rock: { color: "#a3a594", shadow: "#646d65", grain: 0.04, pattern: "hatch", patternColor: "#3f4843" },
-  strata: { color: "#8f7c60", shadow: "#56493a", pattern: "hatch", patternColor: "#3b3128" },
-  water: { color: "#4f8783", shadow: "#2f5a59", outline: 0.35, pattern: "water", patternColor: "#cfe4da" },
-  wall0: { color: "#ece6d5", shadow: "#ada99a" },
-  wall1: { color: "#c39a68", shadow: "#7f6247", pattern: "brick", patternColor: "#e6d6b8", patternStrength: 0.75 },
-  wall2: { color: "#a85a42", shadow: "#6a3a2d", pattern: "brick", patternColor: "#dcc8ad", patternStrength: 0.75 },
-  roof0: { color: "#5e6b77", shadow: "#3a434c", pattern: "slate", patternColor: "#2c343b" },
-  roof1: { color: "#4b555e", shadow: "#2e353b", pattern: "slate", patternColor: "#22292e" },
-  roof2: { color: "#b4623f", shadow: "#743e2b", pattern: "slate", patternColor: "#7a3b27" },
-  ink: { color: "#283036", shadow: "#161b1f" },
-  trunk: { color: "#8a7d68", shadow: "#55503f", pattern: "bark", patternColor: "#5f5545" },
-  // Canopies open a window when they hide the courier from the follow camera (see @clockwork/render seeThrough).
-  leaf0: { color: "#4c8a5c", shadow: "#335f45", pattern: "leaves", patternColor: "#7fb27a", seeThrough: true },
-  leaf1: { color: "#679e62", shadow: "#41694a", pattern: "leaves", patternColor: "#98c47f", seeThrough: true },
-  leaf2: { color: "#8bb06a", shadow: "#56764f", pattern: "leaves", patternColor: "#b6d08a", seeThrough: true },
-  brass: { color: "#dcae4a", shadow: "#8f6630" },
-  copper: { color: "#c23f2f", shadow: "#76261d" },
-  face: { color: "#f4eedd", shadow: "#c7c0aa", outline: 0.6 },
-  cloud: { color: "#eef0e8", shadow: "#a9bab6", grain: 0.05 },
-  smoke: { color: "#dcdfd4", shadow: "#a3afa9", grain: 0.05 },
-  fieldA: { color: "#a9b56f", shadow: "#6d7a4c" },
-  fieldB: { color: "#d3b264", shadow: "#8d7440" },
+  road: { color: "#7c9991", outline: 0.4, grain: 0.03, pattern: "tarmac", patternStrength: 0.8 },
+  // Road paint carries no ink: lines and letters on a street are paint, not objects.
+  paint: { color: "#e6e2d4", outline: 0, grain: 0 },
+  paintYellow: { color: "#d5b247", outline: 0, grain: 0 },
+  sea: { color: "#62aaa6", outline: 0.1, grain: 0.015, pattern: "water", patternColor: "#b2d9cd", patternStrength: 0.24 },
+  ground: { color: "#6d9d61", grain: 0.025, pattern: "grass", patternColor: "#98bf7c" },
+  terrace: { color: "#8db57a", pattern: "grass", patternColor: "#b2cf8c" },
+  paving: { color: "#bcc4b6", outline: 0.6, grain: 0.03, pattern: "flags", patternColor: "#98a093", patternStrength: 0.55 },
+  stone: { color: "#d8d1bc", pattern: "ashlar", patternColor: "#b0a893" },
+  rock: { color: "#a3a594", grain: 0.04, pattern: "hatch", patternColor: "#3f4843" },
+  strata: { color: "#8f7c60", pattern: "hatch", patternColor: "#3b3128" },
+  water: { color: "#4f8884", outline: 0.35, pattern: "water", patternColor: "#cfe4da" },
+  skin: { color: "#dfb59b", grain: 0.012, outline: 0.65 },
+  coat: { color: "#8c4353", grain: 0.025, outline: 0.8 },
+  leather: { color: "#8f5a3e", grain: 0.025 },
+  wall0: { color: "#dfdacb", pattern: "render", patternColor: "#b8795c", patternStrength: 0.95, inkPatches: true },
+  wall1: { color: "#c9b080", pattern: "brick", patternColor: "#ddd2b6", patternStrength: 0.5 },
+  wall2: { color: "#b6684e", pattern: "brick", patternColor: "#cfbba0", patternStrength: 0.48 },
+  roof0: { color: "#5f6c78", pattern: "slate", patternColor: "#2c343b" },
+  roof1: { color: "#4c5660", pattern: "slate", patternColor: "#22292e" },
+  roof2: { color: "#b4623f", pattern: "slate", patternColor: "#7a3b27" },
+  ink: { color: "#2b3337" },
+  trunk: { color: "#7d765c", pattern: "camo", patternColor: "#d0c8a3", patternStrength: 0.85, inkPatches: true },
+  // Solid foliage: a sight-line cutout also erased intersecting hedges/props that share these materials.
+  // The camera avoids scenery through its collision world rather than deleting visible fragments.
+  leaf0: { color: "#4d8b62", pattern: "leaves", patternColor: "#7fb27a" },
+  leaf1: { color: "#679f66", pattern: "leaves", patternColor: "#98c47f" },
+  leaf2: { color: "#8ab26c", pattern: "leaves", patternColor: "#b6d08a" },
+  // Grass tufts: thin blades would drown in ink, so they are drawn as colour alone.
+  tuft: { color: "#80ad6c", outline: 0, grain: 0 },
+  brass: { color: "#dcae4a" },
+  copper: { color: "#c43e2f" },
+  face: { color: "#f4eedd", outline: 0.6 },
+  cloud: { color: "#eef0e8", grain: 0.05 },
+  smoke: { color: "#dcdfd4", grain: 0.05 },
+  fieldA: { color: "#a9b56f" },
+  fieldB: { color: "#d3b264" },
 } as const satisfies Record<string, Swatch>;
 
 export type SwatchKey = keyof typeof SWATCHES;
@@ -59,7 +73,7 @@ const FALLBACK_ACCENT = "#c45f45";
 const sameSwatch = (a: Swatch, b: Swatch) =>
   a.color === b.color && a.shadow === b.shadow && a.outline === b.outline && a.grain === b.grain
   && a.pattern === b.pattern && a.patternColor === b.patternColor && a.patternStrength === b.patternStrength
-  && a.seeThrough === b.seeThrough;
+  && a.seeThrough === b.seeThrough && a.inkPatches === b.inkPatches && a.vertexColors === b.vertexColors && a.character === b.character;
 
 /**
  * One illustrated material per key, created on first use. Each gets its own surface id so the
@@ -239,9 +253,16 @@ export function underside(radius: number, depth = 500): THREE.BufferGeometry {
 
 export type HouseSpec = {
   r: number; theta: number; y: number;
+  /** Authored city plots use an independent position and frontage orientation; older island houses remain polar. */
+  x?: number; z?: number; rotation?: number;
   width: number; depth: number; height: number;
   roof: "gable" | "pyramid"; wall: 0 | 1 | 2; roofColor: 0 | 1 | 2; chimney: boolean;
 };
+
+export function houseFrame(house: Readonly<HouseSpec>): THREE.Matrix4 {
+  if (house.x !== undefined && house.z !== undefined && house.rotation !== undefined) return at(house.x, house.y, house.z, house.rotation);
+  return frame(house.theta, house.r, house.y);
+}
 export type TreeSpec = { x: number; y: number; z: number; height: number; round: boolean; shade: 0 | 1 | 2 };
 
 /** Chimney pots stand this tall on top of a stack (smoke rises from their tops). */
@@ -254,7 +275,7 @@ export const CHIMNEY_POT_HEIGHT = 0.9;
  * Local frame: +Z faces out from the tower (the street front), +X runs along the street.
  */
 export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>): void {
-  const base = frame(house.theta, house.r, house.y);
+  const base = houseFrame(house);
   const { width, depth, height } = house;
   const wall: SwatchKey = `wall${house.wall}`;
   batch.add(wall, new THREE.BoxGeometry(width, height, depth), local(base, 0, height / 2, 0));
@@ -275,18 +296,67 @@ export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>):
   batch.add("face", new THREE.BoxGeometry(3.3, 0.35, 0.55), local(base, 0, 4.45, front + 0.06));
   batch.add("stone", new THREE.BoxGeometry(3.4, 0.45, 1.3), local(base, 0, 0.22, front + 0.55));
 
-  // Sash windows: dark glass in a white frame, a glazing-bar cross and a stone sill.
-  const sash = (x: number, y: number) => {
-    batch.add("face", new THREE.BoxGeometry(2.3, 2.9, 0.3), local(base, x, y, front - 0.02));
-    batch.add("ink", new THREE.BoxGeometry(1.8, 2.4, 0.4), local(base, x, y, front + 0.02));
-    batch.add("face", new THREE.BoxGeometry(0.14, 2.4, 0.5), local(base, x, y, front + 0.05));
-    batch.add("face", new THREE.BoxGeometry(1.8, 0.14, 0.5), local(base, x, y + 0.15, front + 0.05));
-    batch.add("stone", new THREE.BoxGeometry(2.5, 0.28, 0.6), local(base, x, y - 1.5, front + 0.2));
+  // Each house is furnished a little differently (blinds, curtains, window boxes, bins), the same on every rebuild.
+  const random = seededSequence(Math.round((house.x ?? house.r) * 31.7 + (house.z ?? house.theta * 100) * 17.3) ^ 0x4a11);
+  // Only swatches the town already draws with, so furnishing costs no new materials or surface ids.
+  const BLINDS: readonly SwatchKey[] = ["face", "face", "face", "stone", "paving", "brass"];
+  const CURTAINS: readonly SwatchKey[] = ["copper", "leaf0", "roof0"];
+
+  // Sash windows: dark glass in a white frame, a glazing-bar cross and a stone sill. Behind the glass most rooms show
+  // a blind drawn part way down or a curtain at one side, so the windows read as lived-in rooms, not holes.
+  const sash = (x: number, y: number, facade = base, paneZ = front) => {
+    batch.add("face", new THREE.BoxGeometry(2.3, 2.9, 0.3), local(facade, x, y, paneZ - 0.02));
+    batch.add("ink", new THREE.BoxGeometry(1.8, 2.4, 0.4), local(facade, x, y, paneZ + 0.02));
+    const room = random();
+    if (room < 0.55) {
+      const drop = 0.5 + random() * 1.3;
+      batch.add(BLINDS[Math.floor(random() * BLINDS.length)]!, new THREE.PlaneGeometry(1.7, drop), local(facade, x, y + 1.2 - drop / 2, paneZ + 0.235));
+    } else if (room < 0.8) {
+      const side = random() < 0.5 ? -1 : 1;
+      batch.add(CURTAINS[Math.floor(random() * CURTAINS.length)]!, new THREE.PlaneGeometry(0.55, 2.3), local(facade, x + side * 0.6, y, paneZ + 0.235));
+    }
+    batch.add("face", new THREE.BoxGeometry(0.14, 2.4, 0.5), local(facade, x, y, paneZ + 0.05));
+    batch.add("face", new THREE.BoxGeometry(1.8, 0.14, 0.5), local(facade, x, y + 0.15, paneZ + 0.05));
+    batch.add("stone", new THREE.BoxGeometry(2.5, 0.28, 0.6), local(facade, x, y - 1.5, paneZ + 0.2));
+  };
+  // A window box of flowers under a first-floor front window.
+  const windowBox = (x: number, y: number) => {
+    batch.add("trunk", new THREE.BoxGeometry(2.1, 0.42, 0.55), local(base, x, y - 1.15, front + 0.55));
+    for (let i = 0; i < 4; i += 1) {
+      const bloom: SwatchKey = (["copper", "brass", "face", "copper"] as const)[(i + Math.floor(random() * 4)) % 4]!;
+      batch.add("leaf1", new THREE.IcosahedronGeometry(0.3, 0), local(base, x - 0.75 + i * 0.5, y - 0.82, front + 0.6));
+      batch.add(bloom, new THREE.IcosahedronGeometry(0.14, 0), local(base, x - 0.7 + i * 0.5, y - 0.6, front + 0.72));
+    }
   };
   const side = width / 2 - 1.9;
   for (const x of [-side, side]) sash(x, 3.2);
   for (let floor = 1; 3.2 + floor * 6 < height - 2; floor += 1) {
-    for (const x of [-width / 4, width / 4]) sash(x, 3.2 + floor * 6);
+    for (const x of [-width / 4, width / 4]) {
+      sash(x, 3.2 + floor * 6);
+      if (floor === 1 && random() < 0.3) windowBox(x, 3.2 + floor * 6);
+    }
+    // A stone string course marks each floor on brick fronts.
+    if (house.wall !== 0) batch.add("stone", new THREE.BoxGeometry(width + 0.1, 0.24, 0.14), local(base, 0, floor * 6 + 0.2, depth / 2 + 0.07));
+  }
+  // A cast-iron downpipe from the eaves to the pavement at one end of the front.
+  const pipeX = (random() < 0.5 ? -1 : 1) * (width / 2 - 0.35);
+  batch.add("ink", new THREE.CylinderGeometry(0.11, 0.11, height - 0.6, 6), local(base, pipeX, (height - 0.6) / 2, depth / 2 + 0.13));
+  batch.add("ink", new THREE.BoxGeometry(0.42, 0.4, 0.34), local(base, pipeX, height - 0.75, depth / 2 + 0.16));
+
+  // The courier sees backs and ends as often as fronts: no blank stage-set walls when
+  // descending from Westminster or turning into a side lane.
+  const rear = local(base, 0, 0, 0, Math.PI);
+  for (let y = 3.2; y < height - 2; y += 6) {
+    for (const x of [-width / 4, width / 4]) sash(x, y, rear);
+    for (const turn of [-Math.PI / 2, Math.PI / 2]) sash(0, y, local(base, 0, 0, 0, turn), width / 2 + 0.15);
+  }
+
+  // A wheelie bin waits in the front area of some houses, away from the door.
+  if (random() < 0.45) {
+    const binX = (random() < 0.5 ? -1 : 1) * Math.min(width / 2 - 1, 2.9 + random() * 0.6);
+    const lid: SwatchKey = random() < 0.6 ? "ink" : "leaf0";
+    batch.add(lid, new THREE.BoxGeometry(0.9, 1.45, 0.78), local(base, binX, 0.73, depth / 2 + 0.62));
+    batch.add(lid, new THREE.BoxGeometry(0.98, 0.1, 0.86), local(base, binX, 1.5, depth / 2 + 0.62));
   }
 
   // Black area railings just in front of the house, with a gap for the door.
@@ -312,31 +382,112 @@ export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>):
   }
 }
 
-/** Where a round tree's canopy lobes sit around the main one, in units of its radius: [x, y, z, size]. */
-const CANOPY_LOBES = [
-  [0.62, -0.15, 0, 0.68], [-0.45, -0.25, 0.5, 0.64], [-0.3, -0.05, -0.62, 0.66], [0.1, 0.62, -0.05, 0.6],
-] as const;
 /** A fir's stacked cones, bottom to top: [width, height, base] as fractions of the tree's height. */
 const FIR_TIERS = [[0.34, 0.5, 0.18], [0.27, 0.42, 0.42], [0.19, 0.36, 0.64]] as const;
 
+/** A small deterministic random sequence (mulberry32), so every rebuild grows the same tree in the same place. */
+export function seededSequence(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * One clump of leaves: a sphere pushed into broad lumps, with a flatter underside and smooth normals, so the light
+ * turns across it in a soft band and the ink pass outlines it where it overlaps its neighbours.
+ */
+export function leafClump(radius: number, seed: number, detail = 1): THREE.BufferGeometry {
+  const sphere = new THREE.IcosahedronGeometry(1, detail);
+  sphere.deleteAttribute("normal");
+  sphere.deleteAttribute("uv");
+  const geometry = mergeVertices(sphere);
+  sphere.dispose();
+  const position = geometry.getAttribute("position");
+  for (let i = 0; i < position.count; i += 1) {
+    const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+    const lump = 1 + 0.11 * Math.sin(x * 3.1 + seed) * Math.sin(y * 2.7 + seed * 1.7) + 0.06 * Math.sin(z * 5.3 + x * 2.1 + seed * 0.7);
+    position.setXYZ(i, x * radius * lump, y * radius * lump * (y < 0 ? 0.8 : 1), z * radius * lump);
+  }
+  geometry.computeVertexNormals();
+  geometry.setAttribute("uv", new THREE.Float32BufferAttribute(new Float32Array(position.count * 2), 2));
+  return geometry;
+}
+
+/** A tapered limb from `from` to `to` (local coordinates), thick at the start. */
+function limb(from: THREE.Vector3, to: THREE.Vector3, startRadius: number, endRadius: number): THREE.BufferGeometry {
+  const direction = to.clone().sub(from);
+  const length = direction.length();
+  return new THREE.CylinderGeometry(endRadius, startRadius, length, 7, 1)
+    .translate(0, length / 2, 0)
+    .applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, direction.normalize()))
+    .translate(from.x, from.y, from.z);
+}
+
+/**
+ * Where a London plane's parts sit (above its base): a clear trunk to `trunkTop`, then a crown of leaf clumps round
+ * `centre` (horizontal extent `radius`, vertical half-extent `halfHeight`, both with a margin). The crown is carried
+ * high, as street planes are pruned, so people and a street-level camera pass under it. The geometry (addPlaneTree)
+ * and the camera's occluders (courier/cameraWorld) both use this, so they always agree.
+ */
+export function planeTreeCrown(height: number): { trunkTop: number; centre: number; radius: number; halfHeight: number } {
+  const crown = height * 0.3;
+  const trunkTop = 6.6 + height * 0.08;
+  const middle = trunkTop + crown * 0.62;
+  return { trunkTop, centre: middle + crown * 0.175, radius: crown * 1.2 + 0.4, halfHeight: crown * 0.875 + 0.4 };
+}
+
+/**
+ * A London plane: a tall, slightly leaning trunk with a root flare and dappled bark, three limbs forking into the
+ * crown, and a crown of about a dozen lumpy leaf clumps around a core. Everything stays inside the camera's crown and
+ * trunk column for the same tree (planeTreeCrown) and the walking trunk circle.
+ */
+function addPlaneTree(batch: Pick<Batch, "add">, tree: Readonly<TreeSpec>, base: THREE.Matrix4): void {
+  const random = seededSequence(Math.round(tree.x * 73.13 + tree.z * 19.79) ^ 0x5eed);
+  const radius = tree.height * 0.3;
+  const { trunkTop } = planeTreeCrown(tree.height);
+  const centre = trunkTop + radius * 0.62;
+  const lean = local(base, 0, 0, 0, 0);
+  lean.multiply(new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(random() - 0.5, 0, random() - 0.5).normalize(), 0.035));
+  batch.add("trunk", new THREE.CylinderGeometry(0.56, 0.9, trunkTop - 0.4, 10, 3).translate(0, (trunkTop - 0.4) / 2 + 0.4, 0), lean);
+  batch.add("trunk", new THREE.CylinderGeometry(0.9, 1.3, 0.6, 10).translate(0, 0.3, 0), lean);
+  const fork = new THREE.Vector3(0, trunkTop - 0.3, 0);
+  for (let i = 0; i < 3; i += 1) {
+    const angle = (i / 3) * TAU + random() * 0.9;
+    const reach = radius * (0.38 + random() * 0.12);
+    const tip = new THREE.Vector3(Math.cos(angle) * reach, centre - radius * (0.12 + random() * 0.15), Math.sin(angle) * reach);
+    batch.add("trunk", limb(fork, tip, 0.46, 0.2), lean);
+  }
+  const leaf: SwatchKey = `leaf${tree.shade}`;
+  batch.add(leaf, leafClump(radius * 0.7, random() * 10, 2), local(base, 0, centre - radius * 0.05, 0));
+  const clumps = 11 + Math.floor(random() * 4);
+  for (let i = 0; i < clumps; i += 1) {
+    // A golden-angle spiral from the crown's top down to just below its middle, with a little jitter.
+    const y = 1 - 1.5 * ((i + 0.5) / clumps);
+    const ring = Math.sqrt(Math.max(0, 1 - y * y));
+    const angle = i * 2.39996 + random() * 0.4;
+    const distance = radius * (0.5 + random() * 0.1);
+    const size = radius * (0.38 + random() * 0.12);
+    batch.add(leaf, leafClump(size, random() * 10), local(base, Math.cos(angle) * ring * distance, centre + y * distance * 0.78, Math.sin(angle) * ring * distance));
+  }
+}
+
 export function addTree(batch: Pick<Batch, "add">, tree: Readonly<TreeSpec>): void {
   const base = at(tree.x, tree.y, tree.z, (tree.x * 0.37 + tree.z * 0.11) % TAU);
+  if (tree.round) {
+    addPlaneTree(batch, tree, base);
+    return;
+  }
+  // A layered fir: a trunk and three stacked cones, each narrower.
   batch.add("trunk", new THREE.CylinderGeometry(0.7, 1.3, 5.5, 6), local(base, 0, 2.75, 0));
   const leaf: SwatchKey = `leaf${tree.shade}`;
-  if (tree.round) {
-    // A clustered canopy (a big lobe and four smaller ones) reads as leaves rather than one cut gem.
-    const radius = tree.height * 0.3;
-    const centre = 4 + tree.height * 0.3;
-    batch.add(leaf, new THREE.IcosahedronGeometry(radius, 1), local(base, 0, centre, 0));
-    for (const [x, y, z, size] of CANOPY_LOBES) {
-      batch.add(leaf, new THREE.IcosahedronGeometry(radius * size, 0), local(base, x * radius, centre + y * radius, z * radius));
-    }
-  } else {
-    // A layered fir: three stacked cones, each narrower.
-    for (const [width, height, bottom] of FIR_TIERS) {
-      const h = tree.height * height;
-      batch.add(leaf, new THREE.ConeGeometry(tree.height * width, h, 7), local(base, 0, 3 + tree.height * bottom + h / 2, 0));
-    }
+  for (const [width, height, bottom] of FIR_TIERS) {
+    const h = tree.height * height;
+    batch.add(leaf, new THREE.ConeGeometry(tree.height * width, h, 7), local(base, 0, 3 + tree.height * bottom + h / 2, 0));
   }
 }
 

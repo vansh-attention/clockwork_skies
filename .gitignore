@@ -11,3 +11,4 @@ npm-debug.log*
 test-results/
 playwright-report/
 artifacts/
+.claude/
