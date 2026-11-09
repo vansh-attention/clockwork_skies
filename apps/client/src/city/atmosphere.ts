@@ -20,20 +20,20 @@ export type AtmosphereLook = Readonly<{
 }>;
 
 export const ATMOSPHERE = {
-  street: { fogDensity: 0.0034, line: { fadeNear: 45, fadeFar: 420, fadeMin: 0.14, inkTint: 0.08 }, thickness: 1.45 },
+  street: { fogDensity: 0.0034, line: { fadeNear: 45, fadeFar: 420, fadeMin: 0.14, inkTint: 0.08 }, thickness: 1.15 },
   town: { fogDensity: 0.00058, line: { fadeNear: 420, fadeFar: 3200, fadeMin: 0.3, inkTint: 0.18 }, thickness: 1.15 },
 } as const satisfies Record<string, AtmosphereLook>;
 
 /** The near haze: a cool grey with a little of the sky's mint in it. The far haze is the sky's horizon (sky.ts). */
 export const FOG_NEAR = "#a3bdb4";
-/** The ink: a dark slate with a little green in it, never black. */
-export const INK = "#30383a";
+/** The ink: a dark blue slate, never black (the reference's darkest lines sit near hue 204°, value 0.22). */
+export const INK = "#2e333d";
 /**
  * Light from the open sky and from the ground, added to every surface by how much it faces each (linear RGB). The sky
  * term gives shade its cool blue lift; the ground term is a dim warm grey.
  */
-export const SKY_LIGHT = new THREE.Color(0.006, 0.019, 0.038);
-export const GROUND_LIGHT = new THREE.Color(0.0075, 0.0068, 0.006);
+export const SKY_LIGHT = new THREE.Color(0.003, 0.0095, 0.019);
+export const GROUND_LIGHT = new THREE.Color(0.0038, 0.0034, 0.003);
 
 /** How quickly the look follows the camera between street and town, per second. */
 export const ATMOSPHERE_RATE = 1.6;
@@ -75,15 +75,15 @@ export function londonGrade(r: number, g: number, b: number): [number, number, n
   const shoulder = 0.97;
   const curve = (v: number) => {
     const s = v * v * (3 - 2 * v);
-    return toe + (shoulder - toe) * (v + (s - v) * 0.38);
+    return toe + (shoulder - toe) * (v + (s - v) * 0.46);
   };
   let R = curve(r), G = curve(g), B = curve(b);
   const luma = 0.2126 * R + 0.7152 * G + 0.0722 * B;
   const shade = 1 - smooth(0.05, 0.6, luma);
   const light = smooth(0.5, 1, luma);
-  R += shade * -0.012 + light * -0.004;
-  G += shade * 0.012 + light * 0.012;
-  B += shade * 0.008 + light * -0.004;
+  R += shade * -0.01 + light * -0.004;
+  G += shade * 0.012 + light * 0.01;
+  B += shade * 0.004 + light * -0.004;
 
   // Saturation by hue.
   const max = Math.max(R, G, B), min = Math.min(R, G, B);

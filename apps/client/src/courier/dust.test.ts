@@ -12,11 +12,11 @@ const shown = (mesh: THREE.InstancedMesh) =>
   Array.from({ length: mesh.count }, (_, i) => i).filter((i) => new THREE.Vector3().setFromMatrixScale(matrixOf(mesh, i)).x > 1e-3);
 
 describe("createDust", () => {
-  it("is one instanced draw call in the town's smoke material, drawn into both illustration buffers", () => {
+  it("is one instanced draw call in the mid-grey dust material, drawn into both illustration buffers", () => {
     const palette = new Palette();
     const dust = createDust(palette);
     expect(dust.mesh.count).toBe(DUST_POOL);
-    expect(dust.mesh.material).toBe(palette.get("smoke"));
+    expect(dust.mesh.material).toBe(palette.get("dust"));
     expect((dust.mesh.material as THREE.ShaderMaterial).fragmentShader).toContain("location = 1");
     expect(shown(dust.mesh)).toHaveLength(0);
     dust.dispose();
@@ -42,6 +42,23 @@ describe("createDust", () => {
     dust.update(1);
     expect(dust.alive).toBe(0);
     expect(shown(dust.mesh)).toHaveLength(0);
+    dust.dispose();
+  });
+
+  it("swells to about a ninth of the courier's height across and shows for about 0.4 s, as the reference's particles", () => {
+    const dust = createDust(new Palette());
+    dust.spawn(0, 0, 0, 1, 0.25);
+    let widest = 0, shownFor = 0;
+    for (let i = 0; i < 60; i += 1) {
+      dust.update(1 / 60);
+      const s = shown(dust.mesh).map((k) => new THREE.Vector3().setFromMatrixScale(matrixOf(dust.mesh, k)).x);
+      if (s.length) { shownFor += 1 / 60; widest = Math.max(widest, ...s); }
+    }
+    // Radius 1 geometry: the scale is the radius. The courier is 3.79 tall (figure.ts BASE.height).
+    expect(2 * widest).toBeGreaterThan(3.79 / 12);
+    expect(2 * widest).toBeLessThan(3.79 / 7);
+    expect(shownFor).toBeGreaterThan(0.3);
+    expect(shownFor).toBeLessThan(0.55);
     dust.dispose();
   });
 
@@ -86,6 +103,23 @@ describe("createDust", () => {
 });
 
 describe("dust shape", () => {
+  it("has a ragged outline, like the reference's noise-broken particles, not a clean ball", () => {
+    const dust = createDust(new Palette());
+    const position = dust.mesh.geometry.getAttribute("position");
+    const radii = Array.from({ length: position.count }, (_, i) => new THREE.Vector3().fromBufferAttribute(position, i).length());
+    expect(Math.max(...radii) / Math.min(...radii)).toBeGreaterThan(1.3);
+    // A corner shared by several faces sits in the same place in each, so the puff stays closed.
+    const seen = new Map<string, number>();
+    for (let i = 0; i < position.count; i += 1) {
+      const p = new THREE.Vector3().fromBufferAttribute(position, i);
+      const key = p.clone().normalize().toArray().map((v) => v.toFixed(4)).join(",");
+      const radius = seen.get(key);
+      if (radius === undefined) seen.set(key, p.length());
+      else expect(Math.abs(radius - p.length())).toBeLessThan(1e-6);
+    }
+    dust.dispose();
+  });
+
   it("uses smooth normals, so the line pass inks each puff's outline and not its facets", () => {
     const dust = createDust(new Palette());
     const geometry = dust.mesh.geometry;

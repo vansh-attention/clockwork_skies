@@ -6,6 +6,7 @@ import {
   FURNITURE_SIZE, angularGap, bearingOf, createCityLayout, createStreetFurniture, groundHeight,
   type CityLayout, type House,
 } from "../city/layout";
+import { createLondonGroundHeight } from "../city/londonTerrain";
 
 export type Surface = { height: number; walkable: boolean };
 export interface WalkWorld {
@@ -189,6 +190,8 @@ export function createHillTownWalkWorld(layout: CityLayout = createCityLayout())
 export function createLondonWalkWorld(layout: CityLayout): WalkWorld {
   const plan = layout.plan!;
   if (!plan) throw new TypeError("createLondonWalkWorld requires an authored London plan");
+  // People stand on what is drawn: the road's top, a kerb stone, a square, an apron, the paving or the grass.
+  const groundHeight = createLondonGroundHeight(plan);
   type Obstacle = { kind: "circle"; x: number; z: number; r: number } | { kind: "box"; x: number; z: number; cos: number; sin: number; halfX: number; halfZ: number };
   const obstacles: Obstacle[] = [];
   const addBox = (x: number, z: number, halfX: number, halfZ: number, rotation: number) => {
@@ -245,10 +248,11 @@ export function createLondonWalkWorld(layout: CityLayout): WalkWorld {
     if (!Number.isFinite(x) || !Number.isFinite(z) || Math.hypot(x, z) > plan.radius - RIM_MARGIN) return { height: 0, walkable: false };
     for (const bridge of plan.bridges) {
       const point = bridgeCoordinates(bridge, x, z);
-      if (Math.abs(point.along) <= bridge.length / 2 && Math.abs(point.across) <= bridge.width / 2) return { height: ROAD_LIFT, walkable: true };
+      // A bridge's deck, or whatever stands higher on its approach (a kerb running onto it).
+      if (Math.abs(point.along) <= bridge.length / 2 && Math.abs(point.across) <= bridge.width / 2) return { height: Math.max(ROAD_LIFT, groundHeight(x, z)), walkable: true };
     }
     if (riverAt(x, z, plan).distance <= plan.river.halfWidth) return { height: -3, walkable: false };
-    return { height: 0, walkable: true };
+    return { height: groundHeight(x, z), walkable: true };
   }
   function blocked(x: number, z: number, radius: number): boolean {
     if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(radius) || radius < 0) return true;

@@ -199,7 +199,9 @@ describe("walker", () => {
       while (!stepWalker(walker, input, DT, world).blocked && guard < 600) guard += 1;
       const contact = { x: walker.x, z: walker.z };
       run(walker, input, 60);
-      expect(Math.hypot(walker.x - contact.x, walker.z - contact.z)).toBeGreaterThan(2);
+      // Sliding keeps (most of) the push's share along the wall, at least as much as against a wall square to it.
+      const along = WALK.walkSpeed * Math.sin(Math.abs(offset));
+      expect(Math.hypot(walker.x - contact.x, walker.z - contact.z), `offset ${offset}`).toBeGreaterThan(0.8 * along);
     }
   });
 

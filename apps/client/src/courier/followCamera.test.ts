@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { createCameraWorld } from "./cameraWorld";
 import { FOLLOW, FollowCamera, attachFollowInput, type FollowSubject } from "./followCamera";
+import { COURIER_HEIGHT } from "./size";
 
 const subject = (over: Partial<FollowSubject> = {}): FollowSubject => ({ x: 0, y: 0, z: 0, heading: 0, vx: 0, vz: 0, ...over });
 
@@ -38,30 +39,35 @@ describe("FollowCamera framing", () => {
     expect(lookYaw(camera)).toBeCloseTo(Math.PI / 2, 6);
   });
 
-  it("trails a moving subject, then catches up to the default framing", () => {
+  it("holds its distance from a running subject, as the reference's camera does", () => {
     const { camera, follow } = rig();
     follow.snapBehind(subject());
-    // Walk north (-Z) at 10/s for a second: the target trails, so the camera falls back a little (it never closes in,
-    // as a leading target would), then settles once the subject stops.
+    // Run north (-Z) at 10/s for a second. The reference's camera stays the same distance from its character standing,
+    // jogging and sprinting (live-timing.json), so this one neither falls back nor closes in.
     run(follow, 1, 60, (t) => subject({ z: -10 * t, vz: -10 }));
-    const framed = aim(0, -10, 0);
-    expect(camera.position.distanceTo(framed)).toBeGreaterThan(FOLLOW.distance + 0.5);
-    expect(camera.position.distanceTo(framed)).toBeLessThan(FOLLOW.distance + 1.5);
+    expect(camera.position.distanceTo(aim(0, -10, 0))).toBeCloseTo(FOLLOW.distance, 3);
     run(follow, 3, 60, () => subject({ z: -10 }));
-    expect(camera.position.distanceTo(framed)).toBeCloseTo(FOLLOW.distance, 1);
+    expect(camera.position.distanceTo(aim(0, -10, 0))).toBeCloseTo(FOLLOW.distance, 3);
   });
 
-  it("frames the subject over the shoulder, a little left of centre at the reference's height in the view", () => {
-    const { camera, follow } = rig();
+  it("frames the subject as the reference frames its character: head at the centre, feet near the bottom, a little left", () => {
+    const camera = new THREE.PerspectiveCamera(FOLLOW.fov, 16 / 9, FOLLOW.near, 5000);
+    const follow = new FollowCamera(camera);
     follow.snapBehind(subject());
-    // The reference character stands about 0.4 of its height left of the view's centre line (about x = 530 of 1280).
-    const chest = new THREE.Vector3(0, FOLLOW.targetLift, 0).project(camera);
-    expect(chest.x).toBeLessThan(-0.12);
-    expect(chest.x).toBeGreaterThan(-0.22);
-    expect(chest.y).toBeCloseTo(0, 6);
-    // Its feet stay in the lower part of the frame and its head well below the top.
-    expect(new THREE.Vector3(0, 0, 0).project(camera).y).toBeLessThan(-0.4);
-    expect(new THREE.Vector3(0, 3.79, 0).project(camera).y).toBeLessThan(0.3);
+    // The reference's standing frames (1280×720, five views from two sessions): the top of its character's head at
+    // y 345–358 px, its feet at 662–678 px (314–323 px tall), its centre line at x 485–505. Here, within 10 px of those.
+    const py = (point: THREE.Vector3) => 360 - point.clone().project(camera).y * 360;
+    const head = py(new THREE.Vector3(0, COURIER_HEIGHT, 0)); // the courier's height (size.ts)
+    const feet = py(new THREE.Vector3(0, 0, 0));
+    expect(head).toBeGreaterThan(335);
+    expect(head).toBeLessThan(368);
+    expect(feet).toBeGreaterThan(652);
+    expect(feet).toBeLessThan(688);
+    expect(feet - head).toBeGreaterThan(304);
+    expect(feet - head).toBeLessThan(333);
+    const x = 640 + new THREE.Vector3(0, FOLLOW.targetLift, 0).project(camera).x * 640;
+    expect(x).toBeGreaterThan(475);
+    expect(x).toBeLessThan(515);
   });
 
   it("gives the same result at 60 and 144 fps", () => {
@@ -161,22 +167,26 @@ describe("FollowCamera input", () => {
 });
 
 describe("FollowCamera collision", () => {
-  // A wall 10 units behind a subject facing north: the camera behind it would sit inside the wall.
+  // A wall behind a subject facing north, near enough that the camera can neither sit at full distance nor rise clear
+  // of it. Its near face, padded 0.75 by the camera world, is at z = 9.5 - 4 - 0.75 = 4.75.
+  const WALL_FACE = 4.75;
   const wall = createCameraWorld({
     ground: { surfaceAt: () => ({ height: 0, walkable: true }) },
     islandRadius: 1000,
-    houses: [{ x: 0, z: 14, theta: 0, y: 0, width: 60, depth: 8, height: 40 }],
+    houses: [{ x: 0, z: 9.5, theta: 0, y: 0, width: 60, depth: 8, height: 40 }],
   });
+  /** The premise of these tests: at full distance, even risen as far as it goes, the camera would sit inside the wall. */
+  const wallPins = () => expect(FOLLOW.distance * Math.cos(FOLLOW.pitch + FOLLOW.rise.max)).toBeGreaterThan(WALL_FACE + 1);
 
   it("pulls in quickly in front of a wall and never sits inside it", () => {
+    wallPins();
     const { camera, follow } = rig();
     follow.setWorld(wall, { x: 0, y: 0, z: 0 });
     follow.snapBehind(subject());
     run(follow, 0.15, 60, () => subject());
-    // The wall's near face (with padding) is at z = 16 - 4 - 1 = 11.
-    expect(camera.position.z).toBeLessThan(11);
+    expect(camera.position.z).toBeLessThan(WALL_FACE);
     run(follow, 1, 60, () => subject());
-    expect(camera.position.z).toBeLessThan(11);
+    expect(camera.position.z).toBeLessThan(WALL_FACE);
     expect(camera.position.distanceTo(new THREE.Vector3(0, FOLLOW.targetLift, 0))).toBeGreaterThan(2);
   });
 
@@ -227,6 +237,8 @@ describe("FollowCamera collision", () => {
     const lift = FOLLOW.sightLift - FOLLOW.targetLift;
     const fullFromEyes = Math.sqrt(FOLLOW.distance ** 2 - 2 * lift * FOLLOW.distance * Math.sin(FOLLOW.pitch) + lift ** 2 + FOLLOW.shoulder ** 2);
     const pinned = camera.position.distanceTo(eyes);
+    wallPins();
+    expect(pinned).toBeLessThan(fullFromEyes - 1);
     follow.setWorld(null, { x: 0, y: 0, z: 0 });
     follow.update(1 / 60, subject(), false);
     const justAfter = camera.position.distanceTo(eyes);
@@ -260,6 +272,22 @@ describe("FollowCamera collision", () => {
     expect(Math.asin(settled.y / settled.length())).toBeCloseTo(FOLLOW.pitch, 2);
   });
 
+  it("rises to keep the subject in view over something low its eyes can see past", () => {
+    // A cab-like obstacle just below the sight line from the eyes but above it from the chest: without rising, the
+    // camera would keep its distance and lose the subject behind it.
+    const low = createCameraWorld({
+      ground: { surfaceAt: () => ({ height: 0, walkable: true }) }, islandRadius: 1000,
+      boxes: [{ x: 0, z: 4, theta: 0, halfX: 6, halfZ: 2, bottom: 0, top: 3.8 }],
+    });
+    const { camera, follow } = rig();
+    follow.setWorld(low, { x: 0, y: 0, z: 0 });
+    follow.snapBehind(subject());
+    run(follow, 2, 60, () => subject());
+    expect(camera.position.distanceTo(aim(0, 0, 0))).toBeCloseTo(FOLLOW.distance, 1);
+    const chest = new THREE.Vector3(0, FOLLOW.targetLift, 0);
+    expect(low.clearFraction(chest, camera.position)).toBe(1);
+  });
+
   it("slides back behind the subject, rather than being pulled in, beside a wall on its right", () => {
     // Walking along house fronts on the right: over the shoulder the view would hit them, straight behind it is clear.
     const houseFronts = createCameraWorld({
@@ -284,7 +312,8 @@ describe("FollowCamera collision", () => {
     follow.setWorld(wall, origin);
     follow.snapBehind(subject({ x: 1000, y: 100 }));
     run(follow, 1, 60, () => subject({ x: 1000, y: 100 }));
-    expect(camera.position.z).toBeLessThan(11);
+    wallPins();
+    expect(camera.position.z).toBeLessThan(WALL_FACE);
   });
 });
 
@@ -385,14 +414,20 @@ describe("attachFollowInput", () => {
 });
 
 describe("review fixes", () => {
+  // A wall whose padded box (0.75 round the house) spans z = 11.5 ± 4.75: its near face lies inside the camera's
+  // resting reach, so a camera left at full distance would sit in it.
+  const WALL_NEAR = 6.75, WALL_FAR = 16.25;
   const wall = createCameraWorld({
     ground: { surfaceAt: () => ({ height: 0, walkable: true }) },
     islandRadius: 5000,
-    houses: [{ x: 300, z: 16, theta: 0, y: 0, width: 60, depth: 8, height: 40 }],
+    houses: [{ x: 300, z: 11.5, theta: 0, y: 0, width: 60, depth: 8, height: 40 }],
   });
-  const outsideWall = (camera: THREE.PerspectiveCamera) => !(camera.position.z > 11.25 && camera.position.z < 20.75 && Math.abs(camera.position.x - 300) < 30.75 && camera.position.y < 50);
+  const outsideWall = (camera: THREE.PerspectiveCamera) => !(camera.position.z > WALL_NEAR && camera.position.z < WALL_FAR && Math.abs(camera.position.x - 300) < 30.75 && camera.position.y < 50);
+  /** The premise: at full distance and resting pitch the camera would sit inside the wall. */
+  const wallInReach = () => expect(FOLLOW.distance * Math.cos(FOLLOW.pitch)).toBeGreaterThan(WALL_NEAR + 0.5);
 
   it("judges the distance afresh after a teleport next to a wall", () => {
+    wallInReach();
     const { camera, follow } = rig();
     follow.setWorld(wall, { x: 0, y: 0, z: 0 });
     follow.snapBehind(subject());
@@ -401,6 +436,7 @@ describe("review fixes", () => {
   });
 
   it("never shows the inside of a wall that appears suddenly, not even for a frame", () => {
+    wallInReach();
     const { camera, follow } = rig();
     follow.setWorld(wall, { x: 0, y: 0, z: 0 });
     follow.snapBehind(subject({ x: 200 }));

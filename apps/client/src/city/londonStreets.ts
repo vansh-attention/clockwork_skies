@@ -13,12 +13,12 @@ export function addLondonTransport(batch: Batch, item: Furniture): boolean {
   const box = (key: MaterialKey, w: number, h: number, d: number, x: number, y: number, z: number) =>
     batch.add(key, new THREE.BoxGeometry(w, h, d), local(base, x, y, z));
   if (item.kind === "beacon") {
-    batch.add("ink", new THREE.CylinderGeometry(0.09, 0.12, 4.1, 6), local(base, 0, 2.05, 0));
+    batch.add("iron", new THREE.CylinderGeometry(0.09, 0.12, 4.1, 6), local(base, 0, 2.05, 0));
     batch.add("brass", new THREE.SphereGeometry(0.38, 8, 6), local(base, 0, 4.2, 0));
     return true;
   }
   if (item.kind === "bus-stop") {
-    batch.add("ink", new THREE.CylinderGeometry(0.1, 0.12, 4.8, 6), local(base, 0, 2.4, 0));
+    batch.add("iron", new THREE.CylinderGeometry(0.1, 0.12, 4.8, 6), local(base, 0, 2.4, 0));
     batch.add("copper", new THREE.TorusGeometry(0.6, 0.15, 5, 20), local(base, 0, 4.8, 0));
     box("copper", 1.5, 0.3, 0.12, 0, 4.8, 0);
     box("face", 0.65, 1.2, 0.15, 0, 3.4, 0);

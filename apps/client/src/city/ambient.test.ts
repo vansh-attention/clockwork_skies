@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { createHillTownWalkWorld } from "../courier/walkWorld";
-import { PUFFS_PER_CHIMNEY, buildAmbient } from "./ambient";
+import { buildAmbient } from "./ambient";
 import { Palette, addHouse } from "./kit";
 import { STREET, TERRACES, createCityLayout, createHillTownLayout } from "./layout";
 import { frontageApron, onFrontage } from "./londonDetails";
@@ -82,18 +82,18 @@ describe("buildAmbient", () => {
   });
 
   it("flies the birds well above the town, flapping", () => {
-    ambient.update(3, 3, false);
+    ambient.update(3, false);
     const first = instanceScale(ambient.birds, 0).y;
     for (let i = 0; i < ambient.birds.count; i += 1) expect(instancePosition(ambient.birds, i).y).toBeGreaterThan(100);
     const before = instancePosition(ambient.birds, 0);
-    ambient.update(3.4, 3.4, false);
+    ambient.update(3.4, false);
     expect(instancePosition(ambient.birds, 0).distanceTo(before)).toBeGreaterThan(1);
     expect(instanceScale(ambient.birds, 0).y).not.toBeCloseTo(first, 3);
   });
 
   it("never mirrors a bird mid-flap (a mirrored instance would draw inside out)", () => {
     for (let t = 0; t < 2; t += 0.05) {
-      ambient.update(t, t, false);
+      ambient.update(t, false);
       for (let i = 0; i < ambient.birds.count; i += 1) {
         const matrix = new THREE.Matrix4();
         ambient.birds.getMatrixAt(i, matrix);
@@ -102,8 +102,8 @@ describe("buildAmbient", () => {
     }
   });
 
-  it("puts the puffs over the chimneys addHouse actually builds", () => {
-    // The chimney pots are the clay ("roof2") cylinders addHouse puts highest; the puffs rise from between them.
+  it("puts the smoke over the chimneys addHouse actually builds", () => {
+    // The chimney pots are the clay ("roof2") cylinders addHouse puts highest; the smoke rises from between them.
     const batch = { parts: [] as THREE.BufferGeometry[], add(key: string, geometry: THREE.BufferGeometry, matrix?: THREE.Matrix4) {
       if (key === "roof2" && matrix && geometry.type === "CylinderGeometry") this.parts.push(geometry.applyMatrix4(matrix));
     } };
@@ -136,25 +136,43 @@ describe("buildAmbient", () => {
     expect(top.y).toBeCloseTo(bounds.max.y, 3);
   });
 
-  it("puffs smoke from every chimney top, rising as the town ticks", () => {
+  it("raises a smoke plume from every chimney top, flowing with time, in one draw that inks nothing", () => {
     expect(ambient.chimneys.length).toBe(layout.houses.filter((house) => house.chimney).length);
-    expect(ambient.puffs.count).toBe(ambient.chimneys.length * PUFFS_PER_CHIMNEY);
-    ambient.update(0, 0.5, false);
-    const low = instancePosition(ambient.puffs, 0);
-    ambient.update(0, 1.5, false);
-    const high = instancePosition(ambient.puffs, 0);
-    expect(high.y).toBeGreaterThan(low.y + 1);
+    // One ribbon per chimney, every vertex at its chimney top (the shader lifts each by how far along the plume it is).
+    const geometry = ambient.smoke.mesh.geometry;
+    const position = geometry.getAttribute("position");
+    const along = geometry.getAttribute("aAlong");
+    expect(position.count % ambient.chimneys.length).toBe(0);
+    const perPlume = position.count / ambient.chimneys.length;
     const top = ambient.chimneys[0]!;
-    expect(Math.hypot(low.x - top.x, low.z - top.z)).toBeLessThan(6);
-    expect(low.y).toBeGreaterThan(top.y);
+    for (let i = 0; i < perPlume; i += 1) expect(new THREE.Vector3().fromBufferAttribute(position, i).distanceTo(top)).toBeLessThan(1e-4);
+    expect(along.getX(0)).toBe(0);
+    expect(along.getX(perPlume - 1)).toBe(1);
+    // It flows with time.
+    const material = ambient.smoke.mesh.material as THREE.ShaderMaterial;
+    ambient.update(2, false);
+    const earlier = material.uniforms.uTime!.value as number;
+    ambient.update(3, false);
+    expect(material.uniforms.uTime!.value).toBeGreaterThan(earlier);
+    // As the reference's smoke: translucent flat fill, hidden behind nearer things, and leaving the ids, depth, normals
+    // and ink mask beneath exactly as they were, so no ink is drawn round it.
+    expect(material.uniforms.uOpacity!.value).toBeCloseTo(0.35, 6);
+    expect(material.transparent).toBe(true);
+    expect(material.depthTest).toBe(true);
+    expect(material.depthWrite).toBe(false);
+    expect(material.blending).toBe(THREE.CustomBlending);
+    expect(material.blendSrcAlpha).toBe(THREE.ZeroFactor);
+    expect(material.blendDstAlpha).toBe(THREE.OneFactor);
+    expect(material.fragmentShader).toContain("outInfo = vec4(0.0)");
   });
 
   it("holds a still frame under reduced motion", () => {
-    ambient.update(10, 10, true);
+    ambient.update(10, true);
     const birds = Array.from({ length: ambient.birds.count }, (_, i) => instancePosition(ambient.birds, i));
-    const puff = instancePosition(ambient.puffs, 0);
-    ambient.update(55, 55, true);
+    const material = ambient.smoke.mesh.material as THREE.ShaderMaterial;
+    const smokeTime = material.uniforms.uTime!.value as number;
+    ambient.update(55, true);
     birds.forEach((p, i) => expect(instancePosition(ambient.birds, i).distanceTo(p)).toBeLessThan(1e-9));
-    expect(instancePosition(ambient.puffs, 0).distanceTo(puff)).toBeLessThan(1e-9);
+    expect(material.uniforms.uTime!.value).toBe(smokeTime);
   });
 });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { WALK } from "./walker";
 import { createGait, gaitPose, resetGait, updateGait, type CourierPose, type Gait, type GaitInput } from "./gait";
 
 type Drive = (t: number, dt: number) => Partial<Omit<GaitInput, "dt">>;
@@ -84,15 +85,15 @@ describe("walking and running", () => {
       simulate(gait, 3, 60, () => ({ speed }), (pose, t) => { if (t > 2) max = Math.max(max, Math.abs(pose.legs[0].hip)); });
       return { max, gait };
     };
-    const walk = amplitude(10);
-    const run = amplitude(18);
+    const walk = amplitude(WALK.walkSpeed * 1.25);
+    const run = amplitude(WALK.walkSpeed * 2.25);
     expect(run.max).toBeGreaterThan(walk.max + 0.1);
     // Phase per unit distance: running covers more ground per cycle.
     const before = run.gait.phase;
-    updateGait(run.gait, { dt: 1 / 60, distance: 0.3, speed: 18, heading: 0, y: 0, reduced: false });
+    updateGait(run.gait, { dt: 1 / 60, distance: 0.3, speed: WALK.walkSpeed * 2.25, heading: 0, y: 0, reduced: false });
     const runPerUnit = (run.gait.phase - before + Math.PI * 2) % (Math.PI * 2) / 0.3;
     const beforeWalk = walk.gait.phase;
-    updateGait(walk.gait, { dt: 1 / 60, distance: 0.3, speed: 10, heading: 0, y: 0, reduced: false });
+    updateGait(walk.gait, { dt: 1 / 60, distance: 0.3, speed: WALK.walkSpeed * 1.25, heading: 0, y: 0, reduced: false });
     const walkPerUnit = (walk.gait.phase - beforeWalk + Math.PI * 2) % (Math.PI * 2) / 0.3;
     expect(runPerUnit).toBeLessThan(walkPerUnit);
   });

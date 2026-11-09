@@ -9,7 +9,7 @@ import { createCourierModel } from "../courier/models";
 import { Batch, Palette } from "./kit";
 import { chooseIslandSpawn } from "../courier/CourierController";
 import { FRONT_AREA, nearestStreet } from "./londonPlan";
-import { buildLondonStreetNetwork } from "./londonTerrain";
+import { LONDON_SURFACE, buildLondonStreetNetwork } from "./londonTerrain";
 import { frontageApron } from "./londonDetails";
 
 const layout = createCityLayout();
@@ -181,4 +181,51 @@ describe("the default compact London island", () => {
     for (const mesh of meshes) { mesh.geometry.dispose(); materials.add(mesh.material as THREE.Material); }
     materials.forEach((material) => material.dispose());
   });
+
+  it("stands people on the very surfaces it draws: the road's top, kerb stones, squares, aprons and paving", () => {
+    // Found in game: the road is drawn 0.28 above the ground, but the walk world stood everyone at 0, so feet sank into
+    // every road. Probe the drawn street meshes from above, across and along every street, and compare.
+    const batch = new Batch();
+    buildLondonStreetNetwork(batch, plan);
+    const group = new THREE.Group();
+    const meshes = batch.build(new Palette(), group);
+    const surfaces = meshes.filter((mesh) => ["road", "paving", "stone"].includes(mesh.name));
+    expect(surfaces.map((mesh) => mesh.name).sort()).toEqual(["paving", "road", "stone"]);
+    group.updateMatrixWorld(true);
+    const ray = new THREE.Raycaster();
+    const down = new THREE.Vector3(0, -1, 0);
+    let probed = 0, onRoad = 0, onKerb = 0, onPaving = 0;
+    for (const street of plan.streets) {
+      for (let i = 1; i < street.points.length; i += 1) {
+        const a = street.points[i - 1]!, b = street.points[i]!;
+        const length = Math.hypot(b.x - a.x, b.z - a.z);
+        const tx = (b.x - a.x) / length, tz = (b.z - a.z) / length;
+        const half = street.width / 2;
+        const across = [0, half - 0.06, half + 0.06, half + 0.12, half + 0.18, half + 0.3, half + street.pavement * 0.5, half + street.pavement + FRONT_AREA * 0.5];
+        for (let d = 2; d < length - 2; d += 10) {
+          for (const offset of across) for (const side of [-1, 1]) {
+            const x = a.x + tx * d - tz * offset * side, z = a.z + tz * d + tx * offset * side;
+            const surface = world.surfaceAt(x, z);
+            if (!surface.walkable || riverAt(x, z, plan).distance <= plan.river.halfWidth + 2) continue;
+            ray.set(new THREE.Vector3(x, 5, z), down);
+            const hit = ray.intersectObjects(surfaces, false)[0];
+            const drawn = hit ? hit.point.y : LONDON_SURFACE.ground;
+            expect(surface.height, `${street.id} at ${x.toFixed(2)},${z.toFixed(2)}`).toBeCloseTo(drawn, 3);
+            probed += 1;
+            if (Math.abs(drawn - LONDON_SURFACE.road) < 1e-3) onRoad += 1;
+            if (Math.abs(drawn - LONDON_SURFACE.kerb) < 1e-3) onKerb += 1;
+            if (Math.abs(drawn - LONDON_SURFACE.paving) < 1e-3) onPaving += 1;
+          }
+        }
+      }
+    }
+    // Every kind of surface was actually probed.
+    expect(probed).toBeGreaterThan(500);
+    expect(onRoad).toBeGreaterThan(100);
+    expect(onKerb).toBeGreaterThan(20);
+    expect(onPaving).toBeGreaterThan(100);
+    const materials = new Set<THREE.Material>();
+    for (const mesh of meshes) { mesh.geometry.dispose(); materials.add(mesh.material as THREE.Material); }
+    materials.forEach((material) => material.dispose());
+  }, 20000);
 });

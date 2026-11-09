@@ -1,5 +1,6 @@
 import { clamp, damp } from "@clockwork/shared";
 import type { WalkWorld } from "./walkWorld";
+import { COURIER_SIZE } from "./size";
 
 /** forward/strafe in [-1, 1]; cameraYaw is the direction the camera looks, radians: 0 faces −Z, positive turns toward +X. */
 /** `jump` asks for a jump on this step (taken only when standing). */
@@ -28,16 +29,18 @@ export type Walker = {
 };
 
 export const WALK = {
-  radius: 1.5, walkSpeed: 8.5, runSpeed: 11.2, maxStep: 1.2,
+  // The reference courier's measured pace: 2.11 of its heights a second jogging and 2.99 sprinting (live-timing.json),
+  // that is 8.0 and 11.3 for a 3.79-tall figure, carried to the courier's own height (size.ts).
+  radius: 1.5, walkSpeed: 8 * COURIER_SIZE, runSpeed: 11.2 * COURIER_SIZE, maxStep: 1.2,
   /**
    * Response rates per second for both stages (intent, then velocity), fitted to the reference courier's live trace
    * (movement-reference/live-timing.json) and checked against the same key sequence replayed in this game. Starts from
    * standing reach a quarter of top speed after about 0.09 s, half after 0.16 s and 93% after 0.43 s (reference
-   * 0.07–0.10, 0.13–0.18 and 0.29–0.47 s); on release half the speed is gone after about 0.11 s and the courier stops
-   * within about 0.4 s and about a third of its height (reference 0.10–0.20 s and 0.36–0.51 s). The trace's first start
-   * began from the idle fidget and was slower; it is not a fair start.
+   * 0.07–0.10, 0.13–0.18 and 0.29–0.47 s); on release half the speed is gone after about 0.12 s and the courier stops
+   * within about 0.45 s and about a third of its height (reference 0.095–0.20 s and 0.36–0.51 s). The trace's first
+   * start began from the idle fidget and was slower; it is not a fair start.
    */
-  accel: 10, brake: 13.5,
+  accel: 10, brake: 12.5,
   /** Jump take-off speed and gravity: a hop about 1.15 high, about 0.6 s in the air. */
   jumpSpeed: 7.8, gravity: 26,
   /** Steering in the air, as a fraction of the acceleration on the ground. */

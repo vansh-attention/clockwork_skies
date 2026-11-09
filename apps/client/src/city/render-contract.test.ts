@@ -118,10 +118,22 @@ describe("the whole playable world", () => {
     expect(meshesOf(launchers.group).length).toBeGreaterThan(2);
   });
 
+  it("draws clouds only in the sky, flat as the reference's: no puffed cloud meshes in the world", () => {
+    const cloud = city.palette.get("cloud");
+    const puffed = parts.flatMap(meshesOf).filter((mesh) => materialsOf(mesh).includes(cloud)).map((mesh) => mesh.name || mesh.type);
+    expect(puffed).toEqual([]);
+  });
+
   it("keeps every palette surface id below 1 after the whole world is built", () => {
     const ids = new Set<number>();
     for (const part of [city.group, lanternfall.group, launchers.group, courier.group, beacon, ambient.group]) {
-      for (const mesh of meshesOf(part)) for (const material of materialsOf(mesh)) ids.add((material as THREE.ShaderMaterial).uniforms.uSurfaceId?.value as number);
+      for (const mesh of meshesOf(part)) {
+        for (const material of materialsOf(mesh)) {
+          // Materials that draw no surface id (the chimney smoke leaves the ids beneath as they were) are not counted.
+          const id = (material as THREE.ShaderMaterial).uniforms.uSurfaceId?.value as number | undefined;
+          if (id !== undefined) ids.add(id);
+        }
+      }
     }
     expect(Math.max(...ids)).toBeLessThan(1);
   });

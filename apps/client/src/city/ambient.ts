@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { frontageApron, onFrontage, type FrontageApron } from "./londonDetails";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { illustratedEnvironment } from "@clockwork/render";
+import { createChimneySmoke, type ChimneySmoke } from "./chimneySmoke";
 import { CANAL, HOME_LAUNCH_SITE, ISLAND_RADIUS, STAIR_BEARINGS, STREET, SUMMIT, TERRACES, angularGap, bearingOf, createCityLayout, polarToXZ, type CityLayout } from "./layout";
 import { CHIMNEY_POT_HEIGHT, at, frame, houseFrame, local, merge, type MaterialSource } from "./kit";
 import { nearestOnPolyline } from "./londonPlan";
@@ -12,25 +12,22 @@ import type { WalkWorld } from "../courier/walkWorld";
  * - grass tufts on the lawns (instanced, swaying in the wind through the material's `sway` attribute);
  * - copper pennants flanking the stair heads on the summit plaza (fluttering the same way);
  * - three small flocks of birds circling the clock tower (instanced, flapping);
- * - smoke puffs from every chimney, one rising per tick of the town clock (instanced).
+ * - a smoke plume from every chimney, flowing as the reference's smoke does (city/chimneySmoke.ts; its own material).
  */
 export type BuiltAmbient = {
   group: THREE.Group;
   grass: THREE.InstancedMesh;
   pennants: THREE.Mesh;
   birds: THREE.InstancedMesh;
-  puffs: THREE.InstancedMesh;
-  /** Chimney tops, in world space (one entry per chimney; three puffs each). */
+  smoke: ChimneySmoke;
+  /** Chimney tops, in world space (one entry per chimney, one plume each). */
   chimneys: readonly THREE.Vector3[];
-  /** `time` in seconds; `ticks` is the town tick value (city/clockwork tickValue). Reduced motion holds a still frame. */
-  update(time: number, ticks: number, reduced: boolean): void;
+  /** `time` in seconds. Reduced motion holds a still frame. */
+  update(time: number, reduced: boolean): void;
 };
 
 const GRASS_TARGET = 1500;
 const GRASS_ATTEMPTS = 24000;
-export const PUFFS_PER_CHIMNEY = 3;
-/** Each puff takes this many ticks to rise and fade; with three per chimney, a new one starts every tick. */
-const PUFF_TICKS = 3;
 const FLOCKS = [
   { count: 6, radius: 150, height: 150, speed: 0.09 },
   { count: 5, radius: 215, height: 178, speed: -0.07 },
@@ -216,20 +213,17 @@ export function buildAmbient(palette: MaterialSource, world: WalkWorld, layout: 
   birds.frustumCulled = false;
 
   const chimneys = chimneyTops(layout);
-  const puffs = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), palette.get("smoke"), Math.max(1, chimneys.length * PUFFS_PER_CHIMNEY));
-  puffs.name = "Chimney puffs";
-  puffs.frustumCulled = false;
+  const smoke = createChimneySmoke(chimneys);
 
-  group.add(grass, pennants, birds, puffs);
+  group.add(grass, pennants, birds, smoke.mesh);
 
   const matrix = new THREE.Matrix4();
   const position = new THREE.Vector3();
   const rotation = new THREE.Quaternion();
   const scale = new THREE.Vector3();
   const euler = new THREE.Euler();
-  const wind = illustratedEnvironment.uWind.value;
 
-  function update(time: number, ticks: number, reduced: boolean): void {
+  function update(time: number, reduced: boolean): void {
     const t = reduced ? 0 : time;
     birdList.forEach((bird, index) => {
       const flock = FLOCKS[bird.flock]!;
@@ -244,22 +238,9 @@ export function buildAmbient(palette: MaterialSource, world: WalkWorld, layout: 
       birds.setMatrixAt(index, matrix.compose(position, rotation, scale));
     });
     birds.instanceMatrix.needsUpdate = true;
-
-    chimneys.forEach((top, chimney) => {
-      for (let k = 0; k < PUFFS_PER_CHIMNEY; k += 1) {
-        // Reduced motion: one still puff over each chimney.
-        const age = reduced ? (k === 0 ? 0.45 : 0) : (((ticks + k + chimney * 0.37) / PUFF_TICKS) % 1 + 1) % 1;
-        // Small and soft: the puff swells as it rises and drifts downwind, then shrinks away.
-        const size = age <= 0 ? 0 : Math.sin(Math.PI * age) * (0.45 + 0.6 * age) * 0.85;
-        position.set(top.x + wind.x * age * 6, top.y + 0.4 + age * 9, top.z + wind.z * age * 6);
-        rotation.identity();
-        scale.setScalar(Math.max(1e-4, size));
-        puffs.setMatrixAt(chimney * PUFFS_PER_CHIMNEY + k, matrix.compose(position, rotation, scale));
-      }
-    });
-    puffs.instanceMatrix.needsUpdate = true;
+    smoke.update(time, reduced);
   }
 
-  update(0, 0, false);
-  return { group, grass, pennants, birds, puffs, chimneys, update };
+  update(0, false);
+  return { group, grass, pennants, birds, smoke, chimneys, update };
 }

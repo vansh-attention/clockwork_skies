@@ -2,8 +2,10 @@ import * as THREE from "three";
 import { describe, expect, it } from "vitest";
 import { createHillTownWalkWorld } from "../courier/walkWorld";
 import { Palette } from "./kit";
+import { LONDON_SURFACE } from "./londonTerrain";
 import { createCityLayout, createHillTownLayout, polarToXZ } from "./layout";
-import { RESIDENT_CLEARANCE, buildResidents, createResidentAgents, type ResidentRoute } from "./residents";
+import { MAKE_WAY, RESIDENT_CLEARANCE, buildResidents, createResidentAgents, easedProgress, type ResidentRoute } from "./residents";
+import { GAITS } from "../courier/humanGait";
 
 const layout = createCityLayout();
 const residents = buildResidents(new Palette(), layout);
@@ -44,7 +46,14 @@ function checkRoutes(source: ReturnType<typeof createCityLayout>) {
       expect(world.blocked(point.x, point.z, RESIDENT_CLEARANCE - 0.15), agent.id).toBe(false);
       const surface = world.surfaceAt(point.x, point.z);
       expect(surface.walkable, agent.id).toBe(true);
-      expect(surface.height, agent.id).toBeCloseTo(route.height, 5);
+      // London paths keep to pavement-level surfaces (paving, aprons, squares: never a road or a hole); a hill
+      // town's arcs keep to one terrace.
+      if (source.plan) {
+        expect(surface.height, agent.id).toBeGreaterThanOrEqual(LONDON_SURFACE.ground);
+        expect(surface.height, agent.id).toBeLessThanOrEqual(LONDON_SURFACE.square);
+      } else {
+        expect(surface.height, agent.id).toBeCloseTo(route.height, 5);
+      }
       if (source.plan) {
         const own = source.landmarks.find((site) => site.district === agent.district)!;
         const distance = Math.hypot(point.x - own.x, point.z - own.z);
@@ -68,6 +77,22 @@ describe("London residents", () => {
     }
     expect(residents.agents.filter((agent) => agent.district === 6 && agent.stationary).length).toBeGreaterThanOrEqual(2);
     expect(residents.group.userData).toMatchObject({ cosmetic: true, interactive: false });
+  });
+
+  it("stands every resident on the ground drawn where they are, as they walk", () => {
+    const world = createHillTownWalkWorld(layout);
+    let raised = 0;
+    for (const time of [0, 3.7, 11.2, 26.5, 61]) {
+      residents.update(time, false);
+      for (const person of residents.group.children) {
+        const ground = world.surfaceAt(person.position.x, person.position.z);
+        expect(ground.walkable, person.name).toBe(true);
+        expect(person.position.y, `${person.name} at ${time}s`).toBeCloseTo(ground.height, 6);
+        if (ground.height > LONDON_SURFACE.ground) raised += 1;
+      }
+    }
+    // Most of them are on paving or a square, not bare ground: the check above is not vacuous.
+    expect(raised).toBeGreaterThan(residents.group.children.length);
   });
 
   it("validates complete nonradial sidewalk paths against the actual buildings, props, river and ground", () => {
@@ -167,3 +192,151 @@ describe("London residents", () => {
     expect(createResidentAgents(layout, 4)).not.toEqual(createResidentAgents(layout, 5));
   });
 });
+
+describe("how residents move", () => {
+  const forwardOf = (object: THREE.Object3D) => new THREE.Vector3(0, 0, -1).applyQuaternion(object.quaternion);
+
+  it("walk facing the way they go (not backwards), and browsers face what they are looking at", () => {
+    const built = buildResidents(new Palette(), layout);
+    let walked = 0;
+    for (const time of [4, 9.5, 17, 31, 48]) {
+      built.update(time, false);
+      for (let frame = 0; frame < 12; frame += 1) built.update(time + frame / 60, false);
+      const before = built.group.children.map((person) => person.position.clone());
+      built.update(time + 13 / 60, false);
+      built.group.children.forEach((person, i) => {
+        const move = person.position.clone().sub(before[i]!).setY(0);
+        if (move.length() < 0.02) return;
+        expect(forwardOf(person).dot(move.normalize()), `${person.name} at ${time}s`).toBeGreaterThan(0.9);
+        walked += 1;
+      });
+    }
+    expect(walked).toBeGreaterThan(30);
+    built.update(0, true);
+    built.group.children.forEach((person, i) => {
+      const agent = built.agents[i]!;
+      if (!agent.stationary) return;
+      const landmark = layout.landmarks.find((site) => site.district === agent.district)!;
+      const toward = new THREE.Vector3(landmark.x - person.position.x, 0, landmark.z - person.position.z).normalize();
+      expect(forwardOf(person).dot(toward), person.name).toBeGreaterThan(0.99);
+    });
+    built.dispose();
+  });
+
+  it("ease up to their pace and down to a stop at each end, over the same time and distance", () => {
+    for (const duration of [2.4, 6, 15]) {
+      let last = 0, fastest = 0;
+      const dt = duration / 600;
+      for (let i = 1; i <= 600; i += 1) {
+        const p = easedProgress(i * dt, duration);
+        expect(p).toBeGreaterThanOrEqual(last - 1e-12);
+        fastest = Math.max(fastest, (p - last) / dt);
+        last = p;
+      }
+      expect(easedProgress(0, duration)).toBe(0);
+      expect(easedProgress(duration, duration)).toBe(1);
+      // Gentle at the very start and end: nowhere near full pace in the first and last twentieth of a second.
+      expect(easedProgress(0.05, duration) * duration / 0.05).toBeLessThan(0.2);
+      expect((1 - easedProgress(duration - 0.05, duration)) * duration / 0.05).toBeLessThan(0.2);
+      // Never much faster than the even pace (so the stroll never tips into a jog).
+      expect(fastest * duration).toBeLessThan(1.21);
+    }
+  });
+
+  it("never stop dead or start at full pace: in the town, no walker goes from half its pace to a standstill in a frame", () => {
+    const built = buildResidents(new Palette(), layout);
+    const n = built.group.children.length;
+    // Each walker's even pace, per 60 fps frame.
+    const pace = built.agents.map((agent) => agent.speed / 60);
+    let last = built.group.children.map((person) => person.position.clone());
+    const previous = new Array<number>(n).fill(NaN);
+    let stops = 0, jolts = 0;
+    const log: string[] = [];
+    for (let frame = 1; frame <= 60 * 45; frame += 1) {
+      built.update(frame / 60, false);
+      built.group.children.forEach((person, i) => {
+        if (built.agents[i]!.stationary) return;
+        const step = Math.hypot(person.position.x - last[i]!.x, person.position.z - last[i]!.z);
+        const before = previous[i]!;
+        if (Number.isFinite(before)) {
+          const stopDead = before > 0.5 * pace[i]! && step < 0.05 * pace[i]!;
+          const startFull = before < 0.05 * pace[i]! && step > 0.5 * pace[i]!;
+          if (stopDead || startFull) { jolts += 1; log.push(`${person.name} f${frame} ${before.toFixed(4)} -> ${step.toFixed(4)}`); }
+          if (before > 0 && step === 0) stops += 1;
+        }
+        // The first frame has no real previous step: walkers start mid-stride.
+        previous[i] = frame > 1 ? step : NaN;
+      });
+      last = built.group.children.map((person) => person.position.clone());
+    }
+    expect(stops).toBeGreaterThan(10);
+    expect(jolts, log.join(" | ")).toBe(0);
+    built.dispose();
+  });
+
+  it("step at a natural walking cadence for their size: about 100–130 steps a minute", () => {
+    for (const agent of createResidentAgents(layout)) {
+      const figureScale = agent.scale * 0.97;
+      const stepsPerMinute = (2 * 60 * agent.speed) / (figureScale * GAITS.walk.stride);
+      expect(stepsPerMinute, agent.id).toBeGreaterThan(100);
+      expect(stepsPerMinute, agent.id).toBeLessThan(130);
+    }
+  });
+
+  it("turn about at the end of a stretch smoothly, never snapping round in a frame", () => {
+    const built = buildResidents(new Palette(), layout);
+    const headings = () => built.group.children.map((person) => person.rotation.y);
+    built.update(0, false);
+    let last = headings(), sharpest = 0;
+    for (let frame = 1; frame <= 60 * 60; frame += 1) {
+      built.update(frame / 60, false);
+      const now = headings();
+      now.forEach((h, i) => {
+        const turn = Math.abs(Math.atan2(Math.sin(h - last[i]!), Math.cos(h - last[i]!)));
+        sharpest = Math.max(sharpest, turn);
+      });
+      last = now;
+    }
+    // The about-turn takes 1.1 s, eased: at 60 fps no frame turns more than about 4 degrees.
+    expect(sharpest).toBeLessThan(0.1);
+    built.dispose();
+  });
+
+  it("make way: a walker stops short of the courier standing in its path, then walks on once she has gone", () => {
+    const built = buildResidents(new Palette(), layout);
+    const index = built.agents.findIndex((agent) => !agent.stationary);
+    const person = built.group.children[index]!;
+    let t = 2;
+    for (; t < 3; t += 1 / 60) built.update(t, false);
+    // Find it mid-stride, then stand the courier a little ahead of it.
+    let guard = 0;
+    const moving = () => {
+      const before = person.position.clone();
+      built.update(t += 1 / 60, false);
+      return person.position.distanceTo(before) > 0.02;
+    };
+    while (!moving() && guard < 600) guard += 1;
+    const ahead = forwardOf(person).multiplyScalar(MAKE_WAY.ahead * 0.6).add(person.position);
+    const courier = { x: ahead.x, z: ahead.z };
+    for (let i = 0; i < 90; i += 1) built.update(t += 1 / 60, false, undefined, courier);
+    const stopped = person.position.clone();
+    for (let i = 0; i < 60; i += 1) built.update(t += 1 / 60, false, undefined, courier);
+    expect(person.position.distanceTo(stopped)).toBeLessThan(0.01);
+    expect(Math.hypot(person.position.x - courier.x, person.position.z - courier.z)).toBeGreaterThan(0.8);
+    // She steps away: it walks on.
+    const waited = person.position.clone();
+    for (let i = 0; i < 90; i += 1) built.update(t += 1 / 60, false, undefined, null);
+    expect(person.position.distanceTo(waited)).toBeGreaterThan(0.5);
+    built.dispose();
+  });
+
+  it("are solid to the courier: blocks() reports a body touching any resident", () => {
+    const built = buildResidents(new Palette(), layout);
+    built.update(5, false);
+    const person = built.group.children[0]!;
+    expect(built.blocks(person.position.x + 0.6, person.position.z, 0.3)).toBe(true);
+    expect(built.blocks(person.position.x + 2, person.position.z, 0.3)).toBe(false);
+    built.dispose();
+  });
+});
+

@@ -1,10 +1,9 @@
 import * as THREE from "three";
 import { buildLondonGround } from "./londonTerrain";
 import { addLondonRoads, addLondonShopfronts, addLondonTransport, buildLondonSigns } from "./londonStreets";
-import { SeededRandom } from "@clockwork/shared";
 import { DISTRICTS, type DistrictKind } from "./districts";
 import {
-  BRIDGE_BEARINGS, CANAL, ISLAND_RADIUS, STAIR_BEARINGS, STREET, SUMMIT, TERRACES, TOWER_BRIDGE, angularGap, createCityLayout, createStreetFurniture, polarToXZ,
+  BRIDGE_BEARINGS, CANAL, ISLAND_RADIUS, STAIR_BEARINGS, STREET, SUMMIT, TERRACES, TOWER_BRIDGE, angularGap, createCityLayout, createStreetFurniture,
   type CityLayout, type Furniture, type Landmark,
 } from "./layout";
 import {
@@ -19,14 +18,13 @@ export type Spinner = { object: THREE.Object3D; axis: "x" | "y" | "z"; step: num
 export type ClockFace = { center: THREE.Vector3; normal: THREE.Vector3; right: THREE.Vector3; up: THREE.Vector3 };
 export type BuiltCity = {
   group: THREE.Group;
-  /** Static surfaces a click can land on; clouds and chimney smoke are left out. */
+  /** Static surfaces a click can land on; smoke is left out. */
   pickables: THREE.Mesh[];
   hands: THREE.Mesh;
   faces: ClockFace[];
   /** Everything that advances one tick per second. */
   spinners: Spinner[];
   anchor: THREE.Object3D | null;
-  clouds: THREE.Object3D;
   /** One ground point per district, in DISTRICTS order. */
   focusPoints: THREE.Vector3[];
   /** The palette every city material came from, so later scenes can share its surface ids. */
@@ -126,23 +124,23 @@ function addFurniture(batch: Batch, item: Furniture) {
   const base = at(item.x, item.y, item.z, (item.rotation ?? Math.PI - item.bearing) + (item.turn ?? 0));
   if (item.kind === "bin") {
     // A black street litter bin with a gilt band and a domed lid.
-    batch.add("ink", new THREE.CylinderGeometry(0.44, 0.38, 1.45, 12), local(base, 0, 0.73, 0));
+    batch.add("iron", new THREE.CylinderGeometry(0.44, 0.38, 1.45, 12), local(base, 0, 0.73, 0));
     batch.add("brass", new THREE.CylinderGeometry(0.455, 0.455, 0.12, 12), local(base, 0, 1.22, 0));
-    batch.add("ink", new THREE.SphereGeometry(0.46, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.55, 1), local(base, 0, 1.46, 0));
+    batch.add("iron", new THREE.SphereGeometry(0.46, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2).scale(1, 0.55, 1), local(base, 0, 1.46, 0));
     return;
   }
   if (item.kind === "bollard") {
     // A black cast-iron bollard with a gilt ring and a rounded cap.
-    batch.add("ink", new THREE.CylinderGeometry(0.2, 0.26, 1.2, 10), local(base, 0, 0.6, 0));
+    batch.add("iron", new THREE.CylinderGeometry(0.2, 0.26, 1.2, 10), local(base, 0, 0.6, 0));
     batch.add("brass", new THREE.CylinderGeometry(0.23, 0.23, 0.08, 10), local(base, 0, 1.05, 0));
-    batch.add("ink", new THREE.SphereGeometry(0.22, 10, 6), local(base, 0, 1.24, 0));
+    batch.add("iron", new THREE.SphereGeometry(0.22, 10, 6), local(base, 0, 1.24, 0));
     return;
   }
   if (item.kind === "bench") {
     // A London park bench facing -Z: cast-iron ends and arms, two seat slats and a raked back.
     for (const side of [-1, 1]) {
-      batch.add("ink", new THREE.BoxGeometry(0.12, 0.82, 0.86), local(base, side * 1.2, 0.41, 0.02));
-      batch.add("ink", new THREE.BoxGeometry(0.12, 0.08, 0.62), local(base, side * 1.2, 0.74, -0.08));
+      batch.add("iron", new THREE.BoxGeometry(0.12, 0.82, 0.86), local(base, side * 1.2, 0.41, 0.02));
+      batch.add("iron", new THREE.BoxGeometry(0.12, 0.08, 0.62), local(base, side * 1.2, 0.74, -0.08));
     }
     for (const z of [-0.2, 0.14]) batch.add("trunk", new THREE.BoxGeometry(2.5, 0.08, 0.3), local(base, 0, 0.5, z));
     batch.add("trunk", new THREE.BoxGeometry(2.5, 0.42, 0.07).rotateX(-0.22), local(base, 0, 0.86, 0.38));
@@ -158,7 +156,7 @@ function addFurniture(batch: Batch, item: Furniture) {
       batch.add(kind, new THREE.IcosahedronGeometry(0.2, 0), local(base, -1.6 + i * 0.4, 1.17, -0.6 + (i % 2) * 0.35));
     }
     for (const x of [-1.95, 1.95]) for (const z of [-0.95, 0.95]) {
-      batch.add("ink", new THREE.CylinderGeometry(0.06, 0.06, z < 0 ? 2.5 : 3.05, 6), local(base, x, z < 0 ? 1.25 : 1.52, z));
+      batch.add("iron", new THREE.CylinderGeometry(0.06, 0.06, z < 0 ? 2.5 : 3.05, 6), local(base, x, z < 0 ? 1.25 : 1.52, z));
     }
     for (let i = 0; i < 6; i += 1) {
       // Each stripe runs front to back, raked down toward the counter.
@@ -192,11 +190,11 @@ function addFurniture(batch: Batch, item: Furniture) {
     return;
   }
   if (item.kind === "lamp") {
-    batch.add("ink", new THREE.BoxGeometry(0.75, 0.6, 0.75), local(base, 0, 0.3, 0));
-    batch.add("ink", new THREE.CylinderGeometry(0.13, 0.2, 6.2, 8), local(base, 0, 3.6, 0));
-    batch.add("ink", new THREE.BoxGeometry(1.1, 0.16, 0.16), local(base, 0, 6.4, 0));
+    batch.add("iron", new THREE.BoxGeometry(0.75, 0.6, 0.75), local(base, 0, 0.3, 0));
+    batch.add("iron", new THREE.CylinderGeometry(0.13, 0.2, 6.2, 8), local(base, 0, 3.6, 0));
+    batch.add("iron", new THREE.BoxGeometry(1.1, 0.16, 0.16), local(base, 0, 6.4, 0));
     batch.add("face", new THREE.BoxGeometry(0.8, 1.05, 0.8), local(base, 0, 7.15, 0));
-    batch.add("ink", new THREE.ConeGeometry(0.72, 0.75, 4).rotateY(Math.PI / 4), local(base, 0, 8.05, 0));
+    batch.add("iron", new THREE.ConeGeometry(0.72, 0.75, 4).rotateY(Math.PI / 4), local(base, 0, 8.05, 0));
     return;
   }
   batch.add("ink", new THREE.CylinderGeometry(0.66, 0.66, 0.16, 14), local(base, 0, 0.08, 0));
@@ -638,30 +636,6 @@ function buildDistrict(batch: Batch, landmark: Landmark, kind: DistrictKind, ani
   }
 }
 
-function buildClouds(palette: Palette): THREE.Group {
-  const rng = new SeededRandom(0xc10d);
-  const parts: THREE.BufferGeometry[] = [];
-  for (let index = 0; index < 18; index += 1) {
-    const bearing = rng.range(0, TAU);
-    const radius = rng.range(560, 900);
-    const y = index < 13 ? rng.range(40, 175) : rng.range(-330, -150);
-    const { x, z } = polarToXZ(bearing, radius);
-    const puffs = 3 + rng.int(0, 2);
-    for (let puff = 0; puff < puffs; puff += 1) {
-      const size = rng.range(9, 18);
-      const offset = (puff - (puffs - 1) / 2) * size * 1.15;
-      parts.push(new THREE.IcosahedronGeometry(size, 1)
-        .applyMatrix4(at(x, y + rng.range(-3, 4), z, bearing + Math.PI / 2).multiply(at(offset, 0, rng.range(-4, 4)))));
-    }
-  }
-  const group = new THREE.Group();
-  group.name = "Drifting clouds";
-  const mesh = new THREE.Mesh(merge(parts), palette.get("cloud"));
-  mesh.name = "cloud";
-  group.add(mesh);
-  return group;
-}
-
 /** Hour and minute hands for all four faces as one mesh; rebuilt once a minute. */
 export function handsGeometry(faces: readonly ClockFace[], hour: number, minute: number): THREE.BufferGeometry {
   if (faces.length === 0) return new THREE.BufferGeometry().setAttribute("position", new THREE.Float32BufferAttribute([], 3));
@@ -707,8 +681,6 @@ export function buildCity(layout: CityLayout = createCityLayout()): BuiltCity {
 
   const statics = batch.build(palette, group);
   group.add(buildLondonSigns(layout));
-  const clouds = buildClouds(palette);
-  group.add(clouds);
   const hands = new THREE.Mesh(handsGeometry(faces, 0, 0), palette.get("ink"));
   hands.name = "clock hands";
   if (faces.length) group.add(hands);
@@ -720,7 +692,6 @@ export function buildCity(layout: CityLayout = createCityLayout()): BuiltCity {
     faces,
     spinners,
     anchor,
-    clouds,
     palette,
     focusPoints: layout.landmarks.map((landmark) => new THREE.Vector3(landmark.x, landmark.y, landmark.z)),
   };

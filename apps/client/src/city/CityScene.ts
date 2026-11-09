@@ -258,6 +258,7 @@ export class CityScene {
       layout: this.layout,
       freeRoam: !!this.layout.plan,
       world: this.world, camera: this.camera, controls, palette: this.city.palette, canvas: this.canvas, reducedMotion: () => this.reducedMotion,
+      people: (x, z, radius) => this.residents.blocks(x, z, radius),
     });
     this.hudElapsed = 0;
     this.courier.start();
@@ -482,10 +483,10 @@ export class CityScene {
     this.updateClockwork(Date.now());
     if (!this.reducedMotion) this.elapsed += dt;
     illustratedEnvironment.uTime.value = this.elapsed;
-    this.ambient.update(this.elapsed, tickValue(cycleMs(Date.now())), this.reducedMotion);
-    this.residents.update(this.elapsed, this.reducedMotion, this.camera.position);
+    this.ambient.update(this.elapsed, this.reducedMotion);
+    // Walkers make way for the courier while she is on foot in the town.
+    this.residents.update(this.elapsed, this.reducedMotion, this.camera.position, this.mode === "play" ? this.courier?.position() ?? null : null);
     this.fitSun(dt);
-    if (!this.reducedMotion) this.city.clouds.rotation.y += dt * 0.006;
     this.renderer.info.reset();
     this.sky.update(this.camera, this.elapsed, this.pixelRatio);
     // The scene clock stops under reduced motion, so the line boil holds still with it.

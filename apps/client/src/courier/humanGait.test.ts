@@ -1,41 +1,57 @@
 import { describe, expect, it } from "vitest";
-import { BASE_LEG, createFigurePose } from "./figure";
-import { createHumanGait, GAIT_SPEEDS, GAITS, humanPose, legReach, updateHumanGait, type HumanGait } from "./humanGait";
+import { BASE_LEG, COURIER_LOOK, createFigure, createFigureMaterial, createFigurePose, type LegDimensions } from "./figure";
+import { createHumanGait, GAIT_SPEEDS, GAITS, gaitTables, humanPose, legReach, relaxPose, updateHumanGait, type HumanGait } from "./humanGait";
 import { createWalker, stepWalker, WALK, type WalkInput } from "./walker";
 import type { WalkWorld } from "./walkWorld";
 
+/** Who is moving: their own leg, and their height against the base figure's (figure.leg and figure.pace). */
+type Who = { leg: LegDimensions; pace: number };
+/** A resident of the base figure's size. */
+const RESIDENT: Who = { leg: BASE_LEG, pace: 1 };
+/** The courier, short and stubby (figure.ts COURIER_LOOK): her own leg and size. */
+const COURIER: Who = (() => {
+  const figure = createFigure(COURIER_LOOK, createFigureMaterial());
+  return { leg: figure.leg, pace: figure.pace };
+})();
+/** The courier at her own paces (a jog or a sprint), anyone else at a stroll. */
+const whoAt = (speed: number): Who => (speed >= WALK.walkSpeed * 0.9 ? COURIER : RESIDENT);
+
 /** Run at a steady speed for `seconds`, calling `each` after every frame with the gait and the distance so far. */
-function steady(speed: number, seconds: number, hz = 60, each?: (gait: HumanGait, distance: number) => void): HumanGait {
+function steady(speed: number, seconds: number, hz = 60, each?: (gait: HumanGait, distance: number) => void, who: Who = whoAt(speed)): HumanGait {
   const gait = createHumanGait();
   const dt = 1 / hz;
   let travelled = 0;
   for (let i = 0; i < seconds * hz; i += 1) {
     travelled += speed * dt;
-    updateHumanGait(gait, { dt, distance: speed * dt, speed, heading: 0, y: 0, reduced: false });
+    updateHumanGait(gait, { dt, distance: speed * dt, speed, heading: 0, y: 0, reduced: false, pace: who.pace, leg: who.leg });
     each?.(gait, travelled);
   }
   return gait;
 }
 
 /** World-forward position of each foot's heel and toe, and the height of its lowest sole point above the ground. */
-function feet(gait: HumanGait, travelled: number) {
-  const pose = humanPose(gait, createFigurePose());
-  const hipHeight = BASE_LEG.hip + pose.hips.y;
+function feet(gait: HumanGait, travelled: number, legs: LegDimensions = BASE_LEG) {
+  const pose = humanPose(gait, createFigurePose(), legs);
+  const hipHeight = legs.hip + pose.hips.y;
   return pose.legs.map((leg) => {
-    const reach = legReach(leg.hip, leg.knee, leg.ankle);
+    const reach = legReach(leg.hip, leg.knee, leg.ankle, legs);
     return { height: hipHeight - reach.down, heel: travelled + reach.heel, toe: travelled + reach.toe };
   });
 }
 
 describe("human gaits", () => {
-  it("step at a natural rhythm: about one stride a second at the courier's jog, faster when sprinting", () => {
-    const jogCadence = WALK.walkSpeed / GAITS.jog.stride;
-    const runCadence = WALK.runSpeed / GAITS.run.stride;
-    // The reference courier's locomotion clip cycles about every 0.87 s (1.15 strides a second).
-    expect(jogCadence).toBeGreaterThan(1.0);
-    expect(jogCadence).toBeLessThan(1.45);
-    expect(runCadence).toBeGreaterThan(jogCadence);
-    expect(runCadence).toBeLessThan(1.7);
+  it("step at the reference's rhythm at its pace: one stride about every 0.87 s, jogging or sprinting", () => {
+    // The reference courier's run and sprint clips both cycle every 0.96 s at ×1.1 playback, 0.871 s (138 steps a
+    // minute); sprinting lengthens its stride rather than quickening it. Within 2% at a steady jog and sprint, for
+    // the courier's own (short) legs at her pace.
+    const courier = gaitTables(COURIER.leg);
+    const jogCycle = courier.jog.stride / WALK.walkSpeed;
+    const runCycle = courier.run.stride / WALK.runSpeed;
+    expect(Math.abs(jogCycle / 0.871 - 1), `jog cycle ${jogCycle.toFixed(3)} s`).toBeLessThan(0.02);
+    expect(Math.abs(runCycle / 0.871 - 1), `sprint cycle ${runCycle.toFixed(3)} s`).toBeLessThan(0.02);
+    // Its sprint stride is about 1.4 times its jog's (2.6 and 1.84 of its heights a cycle).
+    expect(courier.run.stride / courier.jog.stride).toBeGreaterThan(1.3);
+    expect(courier.run.stride / courier.jog.stride).toBeLessThan(1.5);
     // A stroll (as residents walk) takes slower, shorter strides.
     expect(2.2 / GAITS.walk.stride).toBeGreaterThan(0.55);
     expect(2.2 / GAITS.walk.stride).toBeLessThan(1.1);
@@ -50,7 +66,8 @@ describe("human gaits", () => {
     expect(jog.jog).toBeGreaterThan(0.95);
     const run = steady(WALK.runSpeed, 3);
     expect(run.run).toBeGreaterThan(0.9);
-    expect(GAIT_SPEEDS.runFull).toBeLessThan(WALK.runSpeed);
+    // The thresholds are for the base figure's size; hers scale with her height (figure.pace).
+    expect(GAIT_SPEEDS.runFull * COURIER.pace).toBeLessThan(WALK.runSpeed);
   });
 
   it("keep the supporting foot on the ground while walking, and never push a foot through it", () => {
@@ -70,7 +87,7 @@ describe("human gaits", () => {
     let lowest = Infinity, highest = -Infinity;
     steady(WALK.walkSpeed, 4, 60, (gait, travelled) => {
       if (gait.time < 2.5) return;
-      const support = Math.min(...feet(gait, travelled).map((foot) => foot.height));
+      const support = Math.min(...feet(gait, travelled, COURIER.leg).map((foot) => foot.height));
       lowest = Math.min(lowest, support);
       highest = Math.max(highest, support);
     });
@@ -83,14 +100,15 @@ describe("human gaits", () => {
   it("do not slide the planted foot: through mid-stance it stays where it landed", () => {
     for (const speed of [2.2, WALK.walkSpeed, WALK.runSpeed]) {
       const gait0 = steady(speed, 3);
-      const table = gait0.walk > 0.9 ? GAITS.walk : gait0.jog > 0.9 ? GAITS.jog : GAITS.run;
+      const tables = gaitTables(whoAt(speed).leg);
+      const table = gait0.walk > 0.9 ? tables.walk : gait0.jog > 0.9 ? tables.jog : tables.run;
       const midStance: number[] = [];
       steady(speed, 6, 120, (gait, travelled) => {
         if (gait.time < 3) return;
         // The middle of the left foot's stance, where the sole is flat on the ground.
         const into = gait.phase / table.keys.stance;
         if (into < 0.3 || into > 0.6) return;
-        midStance.push(feet(gait, travelled)[0]!.heel);
+        midStance.push(feet(gait, travelled, whoAt(speed).leg)[0]!.heel);
       });
       // Group by step (a jump of more than a unit means a new step) and measure each step's slip.
       let start = midStance[0]!, worst = 0;
@@ -113,6 +131,40 @@ describe("human gaits", () => {
     expect(pose.arms[0].elbow).toBeGreaterThan(1.1);
     const stroll = humanPose(steady(2.2, 3), createFigurePose());
     expect(stroll.arms[0].elbow).toBeLessThan(0.7);
+  });
+
+  it("jog as the reference's character runs: leaning in, arms bent close, the trailing heel kicked up", () => {
+    // probe-right.png: the reference's ordinary run leans forward, carries its arms bent and close (the forward hand
+    // never reaches out level in front) and kicks the trailing heel up high behind.
+    let forwardArm = -Infinity, swingKnee = -Infinity, lean = 0;
+    steady(WALK.walkSpeed, 3, 60, (gait) => {
+      if (gait.time < 2) return;
+      const pose = humanPose(gait, createFigurePose());
+      forwardArm = Math.max(forwardArm, pose.arms[0].swing, pose.arms[1].swing);
+      swingKnee = Math.max(swingKnee, pose.legs[0].knee, pose.legs[1].knee);
+      lean = -(pose.hips.pitch + pose.spine.pitch + pose.chest.pitch);
+    });
+    expect(lean).toBeGreaterThan(12 * Math.PI / 180);
+    expect(forwardArm).toBeLessThan(30 * Math.PI / 180);
+    expect(swingKnee).toBeGreaterThan(110 * Math.PI / 180);
+  });
+
+  it("carry the courier easy-going: standing, her head tilts and her arms hang loose; running, her stride is her own", () => {
+    const standing = steady(0, 3);
+    const plain = humanPose(standing, createFigurePose());
+    const relaxed = relaxPose(standing, humanPose(standing, createFigurePose()));
+    expect(relaxed.head.roll - plain.head.roll).toBeGreaterThan(0.06);
+    expect(relaxed.arms[0].elbow - plain.arms[0].elbow).toBeGreaterThan(0.1);
+    // Moving, nothing but loose shoulders changes: the legs and lean are the gait's.
+    const jogging = steady(WALK.walkSpeed, 3);
+    const jog = humanPose(jogging, createFigurePose());
+    const easy = relaxPose(jogging, humanPose(jogging, createFigurePose()));
+    expect(easy.legs).toEqual(jog.legs);
+    expect(Math.abs(easy.head.roll - jog.head.roll)).toBeLessThan(0.02);
+    // Under reduced motion the calm pose stays exactly as it was.
+    const calm = steady(0, 1);
+    calm.reduced = true;
+    expect(relaxPose(calm, humanPose(calm, createFigurePose()))).toEqual(humanPose(calm, createFigurePose()));
   });
 
   it("lean into the pace without bouncing or squashing", () => {

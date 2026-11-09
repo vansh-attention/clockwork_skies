@@ -2,13 +2,14 @@ import * as THREE from "three";
 import type { Vec3 } from "@clockwork/shared";
 import { easeFactor, fit, lerp, lerpAngleFPS, lerpFPS, shortestAngle, wrapAngle } from "../motion/ease";
 import type { CameraWorld } from "./cameraWorld";
+import { COURIER_SIZE } from "./size";
 import { WALK } from "./walker";
 
 /**
  * The walking camera: it orbits the courier on spherical coordinates around a smoothed target at head height.
- * - The target trails the courier a little, as the reference's camera does (it blends its target 0.175 of the way
- *   per frame), so a run eases the view back rather than closing in. The view sits over the courier's shoulder: the
- *   courier a little left of centre.
+ * - The target keeps up with the courier, so the camera holds its distance while the courier runs, as the reference's
+ *   does: in its live trace the camera stays 3.39 of its character's heights from it standing, jogging and sprinting
+ *   alike. The view sits over the courier's shoulder: the courier a little left of centre.
  * - While the courier walks nearly straight ahead, the view settles behind it. Lateral/diagonal travel keeps the
  *   chosen view: camera-relative input must not steer itself into a circle as the camera recentres.
  * - Drag orbits (eased, quicker while held), the wheel zooms (eased), pitch is limited.
@@ -22,43 +23,62 @@ export type FollowSubject = { x: number; y: number; z: number; heading: number; 
 
 export const FOLLOW = {
   /**
-   * Street-scale framing: the courier fills roughly a third of the view, with façades and props nearby. 3.1 of its
-   * heights out, as the reference camera sits (radius 5.1 for a 1.64-tall character, measured live).
+   * Street-scale framing, matched to the reference's own frames (1280×720, five standing views from two sessions): its
+   * character stands about 320 px tall with the top of its head at the centre of the view, its feet near the bottom
+   * edge, and a little left of centre. With `pitch`, `lookLift` and `fov` this puts the camera 2.5 of the courier's
+   * heights behind it and 1.5 up, looking down about 12° at its head: the same framing, worked out in
+   * .claude/abeto-messenger/look-analysis.md (sixth pass). Every length here was fitted to a 3.79-tall figure and is
+   * carried to the courier's own height by COURIER_SIZE (size.ts).
    */
-  distance: 11.75,
-  minDistance: 8,
+  distance: 9.9 * COURIER_SIZE,
+  minDistance: 8 * COURIER_SIZE,
   maxDistance: 70,
-  /** Radians above the horizon: low enough to see the sky and the street ahead, high enough to see over a kerb. */
-  pitch: 0.26,
+  /**
+   * Radians above the horizon at which the camera orbits the target (the courier's chest). The view itself looks a
+   * little less steeply down, at the head (see `lookLift`).
+   */
+  pitch: 0.29,
   minPitch: -0.08,
   maxPitch: 1.15,
   /**
-   * The courier's shoulders (about 0.77 of its height; the reference camera aims at 0.8), so the figure sits in the
-   * lower middle of the frame with the street and façades above.
+   * The point the camera orbits: the courier's chest (about 0.77 of its height). Collisions, rising over low things
+   * and keeping the courier in view are all judged around it.
    */
-  targetLift: 2.9,
+  targetLift: 2.9 * COURIER_SIZE,
   /**
-   * Where the view must stay clear from: the courier's eyes. A person can see over a parked cab or a stall that
-   * stands higher than their shoulders, so the collision test starts here; pulled in, the camera slides toward it and
-   * looks over the courier's head rather than into its back.
+   * The view looks this far above the target: at the top of the courier's head (3.77), as the reference camera looks
+   * at the top of its character's capsule. The figure then stands in the lower half of the view with the street ahead
+   * above it.
+   */
+  lookLift: 0.87 * COURIER_SIZE,
+  /**
+   * Where the view must stay clear from: just above the courier's head (an adult's eye height). The camera can look
+   * over a parked cab or a stall that stands above her shoulders (she is short: a cab's roof is above her eyes), so
+   * the collision test starts here, not at her own eyes; pulled in, the camera slides toward it and looks over her
+   * head rather than into her back. A world height, not scaled with her.
    */
   sightLift: 3.45,
   /**
    * Over the shoulder: the view (target and camera together) is moved this far to its right, so the courier sits a
-   * little left of centre, as the reference frames its character (about 0.4 of its height to the side). Where a wall
-   * on the right leaves no room (walking along house fronts), the view slides back behind the courier instead of
-   * being pulled in against its back, at `shoulderK60`.
+   * little left of centre where the reference's frames show its character (centre line at x 485–505 of 1280; its
+   * camera's target offset is 0.4 of the character's height to the side). Where a wall on the right leaves no room
+   * (walking along house fronts), the view slides back behind the courier instead of being pulled in against its
+   * back, at `shoulderK60`.
    */
-  shoulder: 1.5,
+  shoulder: 1.6 * COURIER_SIZE,
   shoulderK60: 0.06,
   /**
-   * Over low things (a parked cab, a stall, a bench) the view rises rather than being pulled in: up to `max` radians
-   * above its pitch, in `step`s, the least that clears the view, easing at `k60`. Walls and houses it cannot clear
-   * still pull the camera in.
+   * Over low things (a parked cab, a stall) the view rises rather than being pulled in or losing the courier behind
+   * them: up to `max` radians above its pitch, in `step`s, the least that keeps the courier's chest in view, easing
+   * at `k60`. Walls and houses it cannot see over still pull the camera in.
    */
   rise: { max: 0.32, step: 0.08, k60: 0.08 },
-  /** The target's catch-up horizontally (k60): the reference camera's own target blend, measured live. */
-  catchUp: 0.175,
+  /**
+   * The target's catch-up horizontally (k60). 1: it keeps up exactly, so the courier neither recedes nor rises on
+   * screen while running. The reference configures a 0.175 blend, but its camera's measured distance from its moving
+   * character does not grow at all (live-timing.json), and what the player sees is what this matches.
+   */
+  catchUp: 1,
   /** The drawn courier already glides over steps, so the target keeps up vertically too (a lagging target sinks the camera into stairs). */
   catchUpY: 0.3,
   rotate: { k60: 0.09, dragK60: 0.35 },
@@ -72,8 +92,8 @@ export const FOLLOW = {
   swoopSeconds: 1.3,
   /** After landing, the view flies from the chase camera down to the courier in this long. */
   landingSwoopSeconds: 0.9,
-  /** The walking field of view (degrees): wider than the town overview, so more sky and street show. */
-  fov: 46,
+  /** The walking field of view (degrees, vertical): the reference camera's own 45. */
+  fov: 45,
   /** The walking camera can pull to 1.2 from the head; preserve nearby head/shoulder surfaces during that squeeze. */
   near: 0.15,
 } as const;
@@ -106,7 +126,7 @@ export class FollowCamera {
   private readonly target = new THREE.Vector3();
   /** The courier's own eyes: collisions are judged from here (the target trails a little behind). */
   private readonly head = new THREE.Vector3();
-  /** Where the camera looks: the target, moved over the shoulder (in proportion as the camera is pulled in). */
+  /** Where the camera looks: the target raised to the head, moved over the shoulder (in proportion as the camera is pulled in). */
   private readonly aim = new THREE.Vector3();
   private sinceInput = Number.POSITIVE_INFINITY;
   private dragging = false;
@@ -287,14 +307,33 @@ export class FollowCamera {
     return this.allowedRadius(this.distance, 0) > wide + 0.5 ? 0 : FOLLOW.shoulder;
   }
 
-  /** The least rise (see FOLLOW.rise) that clears the view at full distance; none when nothing low is in the way. */
+  /**
+   * The rise (see FOLLOW.rise) to head for: the least at which the camera, at full distance, has a clear view from the
+   * courier's eyes and sees its chest; failing that, the least that at least clears the view from the eyes (so the
+   * camera is not pulled in); none when no rise helps (a wall, a house) or none is needed.
+   */
   private riseGoal(): number {
-    if (this.allowedRadius(this.distance, this.shoulder, 0) >= this.distance - 1e-6) return 0;
+    const sightClear = (rise: number) => this.allowedRadius(this.distance, this.shoulder, rise) >= this.distance - 1e-6;
+    let fallback = sightClear(0) ? 0 : -1;
+    if (fallback === 0 && this.chestInView(0)) return 0;
     for (let rise = FOLLOW.rise.step; rise <= FOLLOW.rise.max + 1e-9; rise += FOLLOW.rise.step) {
       if (this.pitch + rise > FOLLOW.maxPitch) break;
-      if (this.allowedRadius(this.distance, this.shoulder, rise) >= this.distance - 1e-6) return rise;
+      if (!sightClear(rise)) continue;
+      if (this.chestInView(rise)) return rise;
+      if (fallback < 0) fallback = rise;
     }
-    return 0;
+    return Math.max(0, fallback);
+  }
+
+  /** True when the camera at full distance (pitch raised by `rise`) sees the courier's chest (the target) unobstructed. */
+  private chestInView(rise: number): boolean {
+    if (!this.world) return true;
+    const { from, to, origin, target } = this;
+    from.x = target.x - origin.x;
+    from.y = target.y - origin.y;
+    from.z = target.z - origin.z;
+    this.orbitPoint(this.distance, this.shoulder, rise, to);
+    return this.world.clearFraction(from, to, FOLLOW.collision.ignoreNear) >= 1;
   }
 
   /** True when the camera could move from its full orbit position now to the one risen by `rise` without passing through anything. */
@@ -354,7 +393,7 @@ export class FollowCamera {
     let y = this.head.y + (fy - this.head.y) * t;
     if (this.world) y = Math.max(y, this.world.floorAt(x - this.origin.x, z - this.origin.z) + this.origin.y);
     this.camera.position.set(x, y, z);
-    this.aim.set(this.target.x + rightX * this.shoulder * t, this.target.y, this.target.z + rightZ * this.shoulder * t);
+    this.aim.set(this.target.x + rightX * this.shoulder * t, this.target.y + FOLLOW.lookLift, this.target.z + rightZ * this.shoulder * t);
     this.camera.lookAt(this.aim);
     this.camera.updateMatrixWorld(true);
   }

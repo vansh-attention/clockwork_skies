@@ -40,7 +40,12 @@ export type BuiltResidents = {
    * Seconds on the scene clock. Reduced motion holds a single deterministic pose and position. With a viewpoint, those
    * beyond RESIDENT_VIEW_DISTANCE of it rest and hide.
    */
-  update(time: number, reduced: boolean, viewpoint?: THREE.Vector3): void;
+  update(time: number, reduced: boolean, viewpoint?: THREE.Vector3, courier?: Readonly<{ x: number; z: number }> | null): void;
+  /**
+   * Whether a body of `radius` at (x, z) would touch a resident where they stand now: people are solid, so the
+   * courier walks round them rather than through them.
+   */
+  blocks(x: number, z: number, radius: number): boolean;
   /**
    * Frees what a scene's own teardown (disposing every mesh's geometry and material it finds) cannot reach: each
    * figure's bone texture.
@@ -57,6 +62,14 @@ export const RESIDENT_CLEARANCE = 1.08;
 const SAMPLE_STEP = 0.35;
 const AGENT_GAP = 3;
 const TURN_SECONDS = 1.1;
+/** A walker reaches its pace from a standstill (and stops) over this long, at most a sixth of a stretch. */
+const EASE_SECONDS = 0.6;
+/** A resident's own body, for the courier to walk round (times their scale). */
+export const RESIDENT_BODY = 0.5;
+/** A walker makes way when the courier stands in its path: this far ahead, this close to its line. */
+export const MAKE_WAY = { ahead: 2.6, across: 1.1, rate: 6 } as const;
+/** The heading of a figure facing along (x, z): 0 faces −Z, positive turns toward +X (figure.ts, poseFigure). */
+export const headingAlong = (x: number, z: number) => Math.atan2(x, -z);
 function routeLength(route: ResidentRoute): number {
   if (route.kind === "arc") return route.halfArc * 2;
   return route.points.slice(1).reduce((sum, p, i) => sum + Math.hypot(p.x - route.points[i]!.x, p.z - route.points[i]!.z), 0);
@@ -198,6 +211,18 @@ function choosePlanRoute(layout: CityLayout, landmark: Landmark, slot: number, w
   return null;
 }
 
+/**
+ * Size and pace, drawn in this order from the seeded hand. An everyday walk of 1.1–1.4 m/s: in proportion to the
+ * walker's size, so every walker steps at a natural cadence (about 105–125 steps a minute), not in slow motion.
+ */
+function stride(random: SeededRandom) {
+  const scale = random.range(0.86, 1.08);
+  const cap = random.next() > 0.25;
+  const speed = scale * random.range(2.45, 2.95);
+  const phase = random.range(0, 25);
+  return { scale, cap, speed, phase };
+}
+
 /** Exported specifications make route safety reviewable without rendering or running an animation. */
 export function createResidentAgents(layout: CityLayout = createCityLayout(), seed = 0x10d0): readonly ResidentAgent[] {
   const random = new SeededRandom(seed);
@@ -211,10 +236,9 @@ export function createResidentAgents(layout: CityLayout = createCityLayout(), se
       const point = pointAlongRoute(route, 0.5);
       agents.push({
         id: `resident-${landmark.district}-${slot}`, district: landmark.district, route, stationary: slot >= 2,
-        facing: Math.atan2(point.x - landmark.x, point.z - landmark.z),
+        facing: headingAlong(landmark.x - point.x, landmark.z - point.z),
         coat: ((landmark.district + slot) % 3) as 0 | 1 | 2,
-        scale: random.range(0.86, 1.08), cap: random.next() > 0.25,
-        speed: random.range(1.7, 2.35), phase: random.range(0, 25),
+        ...stride(random),
       });
     }
   }
@@ -230,16 +254,30 @@ function poseAt(agent: ResidentAgent, time: number): Pose {
   const cycle = 2 * (duration + TURN_SECONDS);
   const t = ((time + agent.phase) % cycle + cycle) % cycle;
   let progress: number, turn: number, walking: boolean;
-  if (t < duration) { progress = t / duration; turn = 0; walking = true; }
+  if (t < duration) { progress = easedProgress(t, duration); turn = 0; walking = true; }
   else if (t < duration + TURN_SECONDS) { progress = 1; turn = (t - duration) / TURN_SECONDS; walking = false; }
-  else if (t < duration * 2 + TURN_SECONDS) { progress = 1 - (t - duration - TURN_SECONDS) / duration; turn = 1; walking = true; }
+  else if (t < duration * 2 + TURN_SECONDS) { progress = 1 - easedProgress(t - duration - TURN_SECONDS, duration); turn = 1; walking = true; }
   else { progress = 0; turn = 1 + (t - duration * 2 - TURN_SECONDS) / TURN_SECONDS; walking = false; }
   // Eased turns happen at rest, leaving the validated route unchanged.
   const whole = Math.floor(turn);
   const fraction = turn - whole;
   const easedTurn = whole + fraction * fraction * (3 - 2 * fraction);
   const point = pointAlongRoute(route, progress);
-  return { x: point.x, z: point.z, heading: Math.atan2(-point.tangentX, -point.tangentZ) + easedTurn * Math.PI, walking };
+  return { x: point.x, z: point.z, heading: headingAlong(point.tangentX, point.tangentZ) + easedTurn * Math.PI, walking };
+}
+
+/**
+ * How far along a stretch of `duration` seconds a walker is after `t`, as a fraction: it eases up to its pace and
+ * back down to a stop at the end, over the same time and distance as walking it at an even pace.
+ */
+export function easedProgress(t: number, duration: number): number {
+  if (t <= 0) return 0;
+  if (t >= duration) return 1;
+  const ease = Math.min(EASE_SECONDS, duration / 6);
+  const top = 1 / (duration - ease);
+  if (t < ease) return (0.5 * top * t * t) / ease;
+  if (t > duration - ease) return 1 - (0.5 * top * (duration - t) ** 2) / ease;
+  return top * (t - ease / 2);
 }
 
 /** Everyday London dress, mixed per resident from a seeded hand: coats, trousers, hair and skin of many tones. */
@@ -277,42 +315,76 @@ export function buildResidents(_palette: MaterialSource, layout: CityLayout = cr
   group.userData.cosmetic = true;
   group.userData.interactive = false;
   const material = createFigureMaterial();
+  // Each resident stands on the ground drawn where they are (a road is higher than the paving beside it), so feet
+  // never sink into a road or a kerb as a route crosses them.
+  const world = createHillTownWalkWorld(layout);
   const people = agents.map((agent, index) => {
     const figure: Figure = createFigure(residentLook(agent, index), material);
     figure.group.name = agent.id;
     figure.mesh.boundingSphere = FIGURE_BOUNDS.clone();
     figure.mesh.frustumCulled = true;
     group.add(figure.group);
-    return { agent, figure, gait: createHumanGait() as HumanGait, pose: createFigurePose() as FigurePose, x: NaN, z: NaN };
+    return {
+      agent, figure, gait: createHumanGait() as HumanGait, pose: createFigurePose() as FigurePose, x: NaN, z: NaN,
+      /** The drawn heading (last frame's, for making way). */
+      heading: NaN,
+      /** 1 walking on, 0 stopped to make way; and the route time lost to making way, so far. */
+      flow: 1, paused: 0,
+    };
   });
   let lastTime = NaN;
-  function update(time: number, reduced: boolean, viewpoint?: THREE.Vector3): void {
+  function update(time: number, reduced: boolean, viewpoint?: THREE.Vector3, courier?: Readonly<{ x: number; z: number }> | null): void {
     const t = reduced || !Number.isFinite(time) ? 0 : time;
     const dt = Number.isFinite(lastTime) ? Math.min(0.2, Math.max(0, t - lastTime)) : 0;
     lastTime = t;
     for (const person of people) {
       const { agent, figure, gait, pose } = person;
-      const placed = poseAt(agent, t);
+      // Making way: a walker with the courier standing in its path eases to a stop, and walks on once she has gone.
+      // The route clock only loses the time spent stopped, so with no one in the way it keeps the scene's time.
+      if (!reduced && dt > 0 && !agent.stationary && Number.isFinite(person.heading)) {
+        let target = 1;
+        if (courier) {
+          const fx = Math.sin(person.heading), fz = -Math.cos(person.heading);
+          const dx = courier.x - person.x, dz = courier.z - person.z;
+          const along = dx * fx + dz * fz;
+          if (along > 0 && along < MAKE_WAY.ahead * agent.scale && Math.abs(dx * fz - dz * fx) < MAKE_WAY.across) target = 0;
+        }
+        person.flow += (target - person.flow) * (1 - Math.exp(-MAKE_WAY.rate * dt));
+        if (person.flow > 0.999) person.flow = 1;
+        person.paused += (1 - person.flow) * dt;
+      }
+      const placed = poseAt(agent, reduced ? 0 : t - person.paused);
+      person.heading = placed.heading;
       const near = !viewpoint || Math.hypot(placed.x - viewpoint.x, placed.z - viewpoint.z) <= RESIDENT_VIEW_DISTANCE;
       figure.group.visible = near;
       const distance = Number.isFinite(person.x) ? Math.hypot(placed.x - person.x, placed.z - person.z) : 0;
       person.x = placed.x;
       person.z = placed.z;
-      figure.group.position.set(placed.x, agent.route.height, placed.z);
-      figure.group.rotation.set(0, -placed.heading, 0);
+      const ground = world.surfaceAt(placed.x, placed.z);
+      const y = ground.walkable ? ground.height : agent.route.height;
+      figure.group.position.set(placed.x, y, placed.z);
+      figure.group.rotation.set(0, -person.heading, 0);
       if (!near && !reduced) continue;
       // A frame's step can only be a stroll's worth: anything longer (a time jump, the first frame) is not walking.
       const stepping = dt > 0 && distance <= agent.speed * dt * 1.5 + 1e-6;
       updateHumanGait(gait, {
         dt: dt > 0 ? dt : 1 / 60, distance: stepping ? distance : 0, speed: stepping && dt > 0 ? distance / dt : 0,
-        heading: placed.heading, y: agent.route.height, reduced, scale: figure.scale,
+        heading: person.heading, y, reduced, scale: figure.scale, pace: figure.pace, leg: figure.leg,
       });
       poseFigure(figure, humanPose(gait, pose, figure.leg));
     }
   }
   update(0, false);
+  function blocks(x: number, z: number, radius: number): boolean {
+    for (const person of people) {
+      if (!person.figure.group.visible || !Number.isFinite(person.x)) continue;
+      const reach = radius + RESIDENT_BODY * person.agent.scale;
+      if ((x - person.x) ** 2 + (z - person.z) ** 2 < reach * reach) return true;
+    }
+    return false;
+  }
   return {
-    group, agents, update,
+    group, agents, update, blocks,
     dispose() {
       for (const person of people) person.figure.mesh.skeleton.dispose();
     },

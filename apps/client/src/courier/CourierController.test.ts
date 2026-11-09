@@ -50,7 +50,7 @@ class FakeFlight {
 }
 
 /** `keys: null` leaves the options without keys, so the controller makes its own DOM reader (needs a stubbed window). */
-function setup(options: { keys?: null } = {}) {
+function setup(options: { keys?: null; people?: (x: number, z: number, radius: number) => boolean } = {}) {
   const world = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(34, 16 / 9, 2, 7000);
   const controls = fakeControls();
@@ -61,6 +61,7 @@ function setup(options: { keys?: null } = {}) {
   const controller = new CourierController({
     world, camera, controls, palette, now: () => clock.t, flightInput: flight, reducedMotion: () => clock.reduced,
     ...(options.keys === null ? {} : { keys }),
+    ...(options.people ? { people: options.people } : {}),
   });
   return { world, camera, controls, keys, clock, controller, flight, palette };
 }
@@ -1497,13 +1498,14 @@ describe("jumping", () => {
     return rig;
   };
 
-  it("hops about a body-height up on Space and comes back down, puffing dust at take-off and landing", () => {
+  it("hops about a body-height up on Space and comes back down, with no dust at take-off (as the reference)", () => {
     const rig = started();
     const y0 = rig.controller.position().y;
     expect(puffs(rig)).toBe(0);
     rig.keys.jump();
     rig.controller.update(1 / 60);
-    expect(puffs(rig)).toBeGreaterThan(0);
+    rig.controller.update(1 / 60);
+    expect(puffs(rig)).toBe(0);
     const up = run(rig, 18, y0);
     expect(up.peak).toBeGreaterThan(0.9);
     expect(up.peak).toBeLessThan(1.5);
@@ -1512,7 +1514,7 @@ describe("jumping", () => {
     rig.controller.dispose();
   });
 
-  it("puffs dust on landing", () => {
+  it("puffs a pair of dust on landing, as the reference does", () => {
     const rig = started();
     const y0 = rig.controller.position().y;
     rig.keys.jump();
@@ -1528,7 +1530,9 @@ describe("jumping", () => {
       }
     }
     expect(wasUp).toBe(true);
-    expect(landedPuffs).toBeGreaterThanOrEqual(7);
+    // The pair shows from the frame after touchdown.
+    rig.controller.update(1 / 60);
+    expect(Math.max(landedPuffs, puffs(rig))).toBe(2);
     rig.controller.dispose();
   });
 
@@ -1591,7 +1595,8 @@ describe("jumping", () => {
   it("clears drifting dust the moment reduced motion is switched on", () => {
     const rig = started();
     rig.keys.jump();
-    rig.controller.update(1 / 60);
+    // Up and down again: the landing pair is drifting.
+    for (let i = 0; i < 90 && puffs(rig) === 0; i += 1) rig.controller.update(1 / 60);
     expect(puffs(rig)).toBeGreaterThan(0);
     rig.clock.reduced = true;
     rig.controller.update(1 / 60);
@@ -1599,22 +1604,36 @@ describe("jumping", () => {
     rig.controller.dispose();
   });
 
-  it("kicks up dust at the heels when running flat out, and none when walking", () => {
+  it("kicks up a puff about once a second while moving briskly, never two at once, and none standing still", () => {
     const rig = started();
+    /** Frames run: the most puffs drawn at once, how many new ones appeared, and the seconds spent moving briskly. */
+    const watch = (frames: number) => {
+      let most = 0, births = 0, brisk = 0, last = puffs(rig);
+      let before = rig.controller.position();
+      for (let i = 0; i < frames; i += 1) {
+        rig.controller.update(1 / 60);
+        const at = rig.controller.position();
+        if (Math.hypot(at.x - before.x, at.z - before.z) * 60 >= 0.6 * WALK.walkSpeed) brisk += 1 / 60;
+        before = at;
+        const now = puffs(rig);
+        if (now > last) births += now - last;
+        last = now;
+        most = Math.max(most, now);
+      }
+      return { most, births, brisk };
+    };
+    // The reference: a try each half second while moving faster than about half its jog, coming good half the time;
+    // so about one puff per second of brisk movement (the street from the spawn runs about five seconds at a jog).
     rig.keys.forward = 1;
-    let walkingPuffs = 0;
-    for (let i = 0; i < 90; i += 1) {
-      rig.controller.update(1 / 60);
-      walkingPuffs = Math.max(walkingPuffs, puffs(rig));
-    }
-    expect(walkingPuffs).toBe(0);
-    rig.keys.run = true;
-    let runningPuffs = 0;
-    for (let i = 0; i < 120; i += 1) {
-      rig.controller.update(1 / 60);
-      runningPuffs = Math.max(runningPuffs, puffs(rig));
-    }
-    expect(runningPuffs).toBeGreaterThan(0);
+    const jog = watch(300);
+    expect(jog.brisk).toBeGreaterThan(3);
+    expect(jog.births).toBeGreaterThanOrEqual(Math.floor(jog.brisk) - 1);
+    expect(jog.births).toBeLessThanOrEqual(Math.ceil(jog.brisk) + 1);
+    expect(jog.most).toBe(1);
+    // Standing, once the last puff has gone: none.
+    rig.keys.forward = 0;
+    watch(60);
+    expect(watch(120).births).toBe(0);
     rig.controller.dispose();
   });
 
@@ -1669,5 +1688,35 @@ describe("jumping", () => {
     const y0 = rig.controller.position().y;
     expect(run(rig, 30, y0).peak).toBeLessThan(1e-9);
     rig.controller.dispose();
+  });
+});
+
+describe("people in the town", () => {
+  it("are solid: the courier walks up to someone in her way and stops at arm's length, never through them", () => {
+    /** Walk forward for two seconds; the closest she came to `person`, and the path she took. */
+    const walk = (person: { x: number; z: number } | null) => {
+      const rig = setup({ people: person ? (x, z, radius) => Math.hypot(x - person.x, z - person.z) < radius + 0.5 : undefined });
+      rig.controller.start();
+      for (let i = 0; i < 60; i += 1) rig.controller.update(1 / 60);
+      rig.keys.forward = 1;
+      const path: { x: number; z: number }[] = [];
+      let closest = Infinity;
+      for (let i = 0; i < 120; i += 1) {
+        rig.controller.update(1 / 60);
+        const p = rig.controller.position();
+        path.push({ x: p.x, z: p.z });
+        if (person) closest = Math.min(closest, Math.hypot(p.x - person.x, p.z - person.z));
+      }
+      return { closest, path };
+    };
+    // Someone standing on the path she takes when nobody is in the way, well into her walk.
+    const free = walk(null);
+    const person = free.path[80]!;
+    const travelled = Math.hypot(free.path[119]!.x - free.path[0]!.x, free.path[119]!.z - free.path[0]!.z);
+    expect(travelled).toBeGreaterThan(5);
+    // Her body against people is 0.45 (0.3 of her wall radius) and theirs 0.5: she stops just short, not through.
+    const blocked = walk(person);
+    expect(blocked.closest).toBeGreaterThan(0.9);
+    expect(blocked.closest).toBeLessThan(1.3);
   });
 });

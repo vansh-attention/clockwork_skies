@@ -42,22 +42,34 @@ const WALK_KEYS: GaitKeys = {
   armSwing: 0.62, armBias: 3, elbow: 16, elbowSwing: 14, armOut: 6, float: 0,
 };
 
-/** The courier's everyday pace: a long, light jog with a short float between steps. */
+/**
+ * The courier's everyday pace: a long, light jog with a float between steps. On her short legs (figure.ts
+ * COURIER_LOOK) its stride (5.9 per cycle, 1.84 of her heights) gives the reference's rhythm at the reference's pace:
+ * one cycle every 0.87 s (138 steps a minute) at 2.11 of her heights a second; short legs reach far. Carried as
+ * the reference's character runs (probe-right.png): leaning into it, the arms bent and close rather than reaching out
+ * in front, and the trailing heel kicking up behind. The stance keys (the first third) set the planted foot and stride
+ * and are as fitted.
+ */
 const JOG_KEYS: GaitKeys = {
-  hip: [38, 22, 2, -24, -18, 6, 34, 50, 52, 46],
-  knee: [20, 38, 32, 24, 50, 84, 104, 100, 70, 34],
+  hip: [42, 23, 2, -27, -19, 6, 36, 53, 55, 49],
+  knee: [30, 48, 42, 34, 56, 96, 118, 108, 72, 34],
   ankle: [6, 16, 12, -14, -22, -10, 0, 8, 10, 8],
-  stance: 0.34, lean: 8, pelvisYaw: 8, pelvisRoll: 3, sway: 0.02, counter: 0.8,
-  armSwing: 0.72, armBias: 8, elbow: 82, elbowSwing: 16, armOut: 9, float: 0.05,
+  stance: 0.34, lean: 17, pelvisYaw: 8, pelvisRoll: 3, sway: 0.02, counter: 0.8,
+  armSwing: 0.45, armBias: 2, elbow: 95, elbowSwing: 8, armOut: 9, float: 0.05,
 };
 
-/** Running hard (sprint). */
+/**
+ * Running hard (sprint): long bounding strides with a long float, keeping the reference's rhythm rather than quickening
+ * it, as its sprint does (the same clip rate as its run, the stride lengthened): on the courier's short legs 8.3 per
+ * cycle (2.6 of her heights), one cycle every 0.87 s at 2.99 of her heights a second.
+ */
 const RUN_KEYS: GaitKeys = {
-  hip: [44, 21, -3, -28, -20, 10, 44, 62, 64, 54],
-  knee: [22, 38, 32, 28, 64, 104, 124, 118, 82, 38],
-  ankle: [8, 16, 12, -18, -26, -10, 2, 10, 12, 10],
-  stance: 0.3, lean: 13, pelvisYaw: 10, pelvisRoll: 2.5, sway: 0.015, counter: 0.9,
-  armSwing: 0.88, armBias: 12, elbow: 92, elbowSwing: 12, armOut: 11, float: 0.08,
+  // The hip drives back early through a short stance; the knee is a little bent and the foot near flat at landing.
+  hip: [60, 28, -11, -38, -27, 13, 60, 85, 88, 74],
+  knee: [30, 42, 32, 28, 64, 104, 124, 118, 82, 42],
+  ankle: [2, 16, 12, -18, -26, -10, 2, 10, 12, 6],
+  stance: 0.26, lean: 18, pelvisYaw: 10, pelvisRoll: 2.5, sway: 0.015, counter: 0.9,
+  armSwing: 0.62, armBias: 6, elbow: 100, elbowSwing: 8, armOut: 11, float: 0.1,
 };
 
 /** Periodic Catmull-Rom through evenly spaced keys (u in cycles, any value). */
@@ -128,9 +140,21 @@ export function bakeGait(keys: GaitKeys, leg: LegDimensions = BASE_LEG): GaitTab
   return { keys, hip, knee, ankle, float, stride: travel / keys.stance };
 }
 
-const TABLES = { walk: bakeGait(WALK_KEYS), jog: bakeGait(JOG_KEYS), run: bakeGait(RUN_KEYS) } as const;
-/** The baked gaits, for tests and tools. */
+type GaitTables = Readonly<{ walk: GaitTable; jog: GaitTable; run: GaitTable }>;
+const bakeAll = (leg: LegDimensions): GaitTables => ({ walk: bakeGait(WALK_KEYS, leg), jog: bakeGait(JOG_KEYS, leg), run: bakeGait(RUN_KEYS, leg) });
+const TABLES = bakeAll(BASE_LEG);
+/** The baked gaits for the base leg, for tests and tools. */
 export const GAITS = TABLES;
+const BAKED = new WeakMap<LegDimensions, GaitTables>([[BASE_LEG, TABLES]]);
+/** The gaits baked for one leg geometry (a figure's own, shorter for a stubby stature), baked once per leg. */
+export function gaitTables(leg: LegDimensions = BASE_LEG): GaitTables {
+  let tables = BAKED.get(leg);
+  if (!tables) {
+    tables = bakeAll(leg);
+    BAKED.set(leg, tables);
+  }
+  return tables;
+}
 
 function tableAt(table: Float32Array, u: number): number {
   const x = (((u % 1) + 1) % 1) * SAMPLES;
@@ -151,8 +175,12 @@ export type HumanGaitInput = {
   y: number;
   reduced: boolean;
   airborne?: boolean;
-  /** The figure's size (figure.scale): strides and speed thresholds scale with it. */
+  /** The figure's drawn size (figure.scale): its strides scale with it. */
   scale?: number;
+  /** The figure's height against the base figure's (figure.pace): the speed thresholds scale with it. Default: scale. */
+  pace?: number;
+  /** The figure's own leg (figure.leg), which its strides are measured from. Default: the base leg. */
+  leg?: LegDimensions;
 };
 
 export type HumanGait = {
@@ -226,7 +254,9 @@ export function updateHumanGait(gait: HumanGait, input: HumanGaitInput): void {
   const { dt } = input;
   if (!Number.isFinite(dt) || dt <= 0) return;
   const scale = input.scale && input.scale > 0 ? input.scale : 1;
-  const speed = Number.isFinite(input.speed) ? Math.max(0, input.speed) / scale : 0;
+  const pace = input.pace && input.pace > 0 ? input.pace : scale;
+  const tables = gaitTables(input.leg);
+  const speed = Number.isFinite(input.speed) ? Math.max(0, input.speed) / pace : 0;
   const heading = Number.isFinite(input.heading) ? input.heading : gait.lastHeading;
   const y = Number.isFinite(input.y) ? input.y : gait.lastY;
   const distance = Number.isFinite(input.distance) ? Math.max(0, input.distance) / scale : 0;
@@ -234,7 +264,7 @@ export function updateHumanGait(gait: HumanGait, input: HumanGaitInput): void {
   gait.reduced = input.reduced;
   gait.time += dt;
   const airborne = input.airborne === true;
-  if (airborne && gait.air < 0.05) gait.lead = tableAt(TABLES.walk.hip, gait.phase) >= tableAt(TABLES.walk.hip, gait.phase + 0.5) ? -1 : 1;
+  if (airborne && gait.air < 0.05) gait.lead = tableAt(tables.walk.hip, gait.phase) >= tableAt(tables.walk.hip, gait.phase + 0.5) ? -1 : 1;
   gait.air = lerpFPS(gait.air, airborne ? 1 : 0, airborne ? 0.3 : 0.22, dt);
 
   // Which gait: walking below a jog's pace, jogging at the courier's ordinary pace, running when sprinting.
@@ -246,12 +276,12 @@ export function updateHumanGait(gait: HumanGait, input: HumanGaitInput): void {
   gait.run = lerpFPS(gait.run, targets[2], 0.05, dt);
   const sum = gait.walk + gait.jog + gait.run || 1;
   gait.walk /= sum; gait.jog /= sum; gait.run /= sum;
-  // The moving pose follows speed, as the reference's clip weights do: full from half the recent top speed (never
+  // The moving pose follows speed, as the reference's clip weights do: full from 0.6 of the recent top speed (never
   // below a stroll's pace, so a steady stroller's planted feet never slide), so a stopping courier blends out with
   // its speed. Measured with the walker: half in about 0.15 s into a start and 90% by 0.4 s; half out about 0.33 s
-  // after release and down to a tenth by 0.54 s (reference 0.11–0.28, 0.36–0.55, 0.21–0.35 and 0.47–0.61 s).
+  // after release and down to a tenth by 0.55 s (reference 0.11–0.28, 0.36–0.55, 0.21–0.35 and 0.47–0.61 s).
   gait.peak = Math.max(speed, lerpFPS(gait.peak, speed, 0.02, dt));
-  gait.move = lerpFPS(gait.move, fit(speed, 0.15, Math.max(1.6, 0.5 * gait.peak), 0, 1), speed > 0.15 ? 0.1 : 0.15, dt);
+  gait.move = lerpFPS(gait.move, fit(speed, 0.15, Math.max(1.6, 0.6 * gait.peak), 0, 1), speed > 0.15 ? 0.1 : 0.15, dt);
 
   // Turning: how fast the heading swings, eased, for banking and looking into the turn.
   const turnRate = Math.min(MAX_TURN_RATE, Math.max(-MAX_TURN_RATE, shortestAngle(gait.lastHeading, heading) / dt));
@@ -259,7 +289,7 @@ export function updateHumanGait(gait: HumanGait, input: HumanGaitInput): void {
   gait.roll = lerpFPS(gait.roll, Math.min(0.2, Math.max(-0.2, -gait.turn * speed * 0.0065)), 0.12, dt);
 
   // Stride: distance advances the phase by the blended stride length; turning on the spot shuffles the feet round.
-  const stride = gait.walk * TABLES.walk.stride + gait.jog * TABLES.jog.stride + gait.run * TABLES.run.stride;
+  const stride = gait.walk * tables.walk.stride + gait.jog * tables.jog.stride + gait.run * tables.run.stride;
   const shuffle = speed < 1 ? Math.abs(shortestAngle(gait.lastHeading, heading)) * 0.5 : 0;
   gait.phase = (gait.phase + ((distance + shuffle) * (1 - gait.air)) / stride) % 1;
 
@@ -289,6 +319,26 @@ export function updateHumanGait(gait: HumanGait, input: HumanGaitInput): void {
   gait.lastVy = vy;
 }
 
+/**
+ * An easy-going carriage, added to a pose from humanPose (the courier's): standing, her head tilts a little to one
+ * side and drifts slowly, her weight sinks into one hip and her arms hang loose and a little bent; moving, her
+ * shoulders stay loose. Nothing changes under reduced motion.
+ */
+export function relaxPose(gait: HumanGait, out: FigurePose): FigurePose {
+  if (gait.reduced) return out;
+  const still = 1 - gait.move;
+  const drift = Math.sin(gait.time * 0.35);
+  out.head.roll += still * (0.11 + 0.03 * drift);
+  out.head.pitch -= still * 0.04;
+  out.hips.roll += still * 0.035;
+  out.chest.roll -= still * 0.03;
+  for (const arm of out.arms) {
+    arm.out += 0.03;
+    arm.elbow += still * 0.14;
+  }
+  return out;
+}
+
 /** A calm standing pose: the same for every call (reduced motion, previews). */
 function standingPose(out: FigurePose): FigurePose {
   const rest = createFigurePose();
@@ -311,7 +361,8 @@ export function humanPose(gait: HumanGait, out: FigurePose = createFigurePose(),
   if (gait.reduced) return standingPose(out);
   const u = gait.phase;
   const w = [gait.walk, gait.jog, gait.run] as const;
-  const tables = [TABLES.walk, TABLES.jog, TABLES.run] as const;
+  const baked = gaitTables(leg);
+  const tables = [baked.walk, baked.jog, baked.run] as const;
   const blendKey = (key: keyof Pick<GaitKeys, "lean" | "pelvisYaw" | "pelvisRoll" | "sway" | "counter" | "armSwing" | "armBias" | "elbow" | "elbowSwing" | "armOut">) =>
     w[0] * tables[0].keys[key] + w[1] * tables[1].keys[key] + w[2] * tables[2].keys[key];
   const blendTable = (pick: (table: GaitTable) => Float32Array, at: number) =>
@@ -352,17 +403,18 @@ export function humanPose(gait: HumanGait, out: FigurePose = createFigurePose(),
   out.hips.x = -blendKey("sway") * Math.sin(cycle) * move + still * 0.045 * weightShift;
   out.hips.z = 0;
   const lean = blendKey("lean") * DEG * move + gait.lean;
-  out.hips.pitch = -lean * 0.25;
+  // Most of the lean is carried by the trunk above the pelvis, so a deeper lean never tips the planted leg into the ground.
+  out.hips.pitch = -lean * 0.15;
   out.hips.yaw = -yawAmount * Math.cos(cycle);
   out.hips.roll = -rollAmount * Math.sin(cycle) + still * 0.05 * weightShift + gait.roll;
 
   // The trunk leans with speed, turns against the pelvis, and keeps the shoulders level against the pelvis's tilt.
   const counter = blendKey("counter");
   const chestYaw = -(1 + counter) * out.hips.yaw;
-  out.spine.pitch = -lean * 0.45 + breath * 0.008 * still;
+  out.spine.pitch = -lean * 0.52 + breath * 0.008 * still;
   out.spine.yaw = chestYaw * 0.4;
   out.spine.roll = -out.hips.roll * 0.5 + gait.roll * 0.4;
-  out.chest.pitch = -lean * 0.3 - breath * 0.012 * still;
+  out.chest.pitch = -lean * 0.33 - breath * 0.012 * still;
   out.chest.yaw = chestYaw * 0.6;
   out.chest.roll = -out.hips.roll * 0.3;
 

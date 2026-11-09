@@ -11,7 +11,7 @@ import { FixedClock } from "../space/clock";
 import { easeFactor, fit, lerp, lerpFPS, shortestAngle, stepSpring, type Spring } from "../motion/ease";
 import { animateBeacon, animateCourier, animateHuman, createBeacon, createCourierModel, disposeModel, type CourierModel } from "./models";
 import { createFigurePose } from "./figure";
-import { createHumanGait, humanPose, resetHumanGait, updateHumanGait } from "./humanGait";
+import { createHumanGait, humanPose, relaxPose, resetHumanGait, updateHumanGait } from "./humanGait";
 import { FlightInputLatch, NEUTRAL_FLIGHT } from "./flightInput";
 import {
   HOME_GATE, HOME_PAD, KEEPER_DOOR, LANTERNFALL_CENTER, LANTERNFALL_GATE, LANTERNFALL_PAD,
@@ -88,6 +88,9 @@ export type ControlsLike = {
   autoRotate: boolean;
 };
 
+/** Her body against other people, as a share of her collision radius (WALK.radius 1.5: 0.45). */
+const PERSON_BODY = 0.3;
+
 export type CourierControllerOptions = {
   /** A walking experience, without the retired clock and flight quest loop. */
   freeRoam?: boolean;
@@ -104,6 +107,11 @@ export type CourierControllerOptions = {
   layout?: CityLayout;
   /** Default: createHomeWalkWorld() (the hill town plus the home launcher's uprights). */
   walkWorld?: WalkWorld;
+  /**
+   * People in the home town (world coordinates): whether a body of `radius` at (x, z) would touch one. The courier
+   * walks round them; only her own step uses it (not the camera, the task anchors or the spawn).
+   */
+  people?: (x: number, z: number, radius: number) => boolean;
   /** Default: a DOM keyboard reader attached in start() and removed in stop(), only when `window` exists. */
   keys?: WalkKeys;
   /** Wall-clock milliseconds; default Date.now. Task timing (tick presses) uses this clock. */
@@ -128,8 +136,14 @@ const SLOPE_RATE = 12;
 const STEP_MIN = 0.15;
 /** A Space press stays queued this long, so pressing just before touching down still jumps. */
 const JUMP_BUFFER_SECONDS = 0.15;
-/** Dust puffs: how many and how far they spread, on take-off, landing and each running footfall (from this run weight). */
-const DUST = { takeoff: 4, takeoffRadius: 1.3, landing: 7, landingRadius: 2, step: 2, stepRadius: 0.6, runFrom: 0.6, heelBack: 0.9 } as const;
+/**
+ * Dust puffs, as the reference's footstep particles: none on take-off; a pair on landing; while moving over the ground
+ * faster than about half the jog, a try every half second that comes good every other time (the reference tosses a
+ * coin), at one foot then the other, a little behind; never more than two in the air at once.
+ */
+const DUST = {
+  landing: 2, landingRadius: 0.35, stepRadius: 0.25, every: 0.5, fromSpeed: 0.55 * WALK.walkSpeed, side: 0.27, back: 0.4, most: 2,
+} as const;
 /** Teleport spots keep this much height margin inside the anchor's allowed height difference. */
 const TELEPORT_DY_MARGIN = 1;
 const SPOT_RINGS = 8;
@@ -457,9 +471,12 @@ export class CourierController {
   private readonly gaitInput = { dt: 0, distance: 0, speed: 0, heading: 0, y: 0, reduced: false, airborne: false, compact: false };
   /** Seconds a Space press stays queued, so a press just before landing still jumps. */
   private jumpBuffer = 0;
-  /** Puffs kicked up by take-offs, landings and running steps (world coordinates), and the stride phase of the last one. */
+  /** Puffs kicked up by landings and brisk steps (world coordinates). */
   private readonly dust: Dust;
-  private lastStridePhase = 0;
+  /** Time towards the next step puff, the tries so far (every other one puffs) and the foot of the last one (±1). */
+  private dustClock = 0;
+  private dustTries = 0;
+  private dustSide = 1;
   /** The camera's field of view when the controller was made; flight widens it, walking eases it back. */
   private readonly baseFov: number;
   private propellerSpin = 0;
@@ -828,6 +845,23 @@ export class CourierController {
   }
 
   /** World position of the current island's local origin. */
+  /**
+   * The world her step is taken in: the walk world, with the town's people solid on the home island. Her collision
+   * radius is sized for walls and keeps the camera clear of them; against people her own body counts, so she can pass
+   * someone on a pavement.
+   */
+  private stepWorld(): WalkWorld {
+    const people = this.options.people;
+    if (!people || this.currentIsland !== "home") return this.walkWorld;
+    const world = this.walkWorld;
+    this.peopleWorld ??= {
+      surfaceAt: (x, z) => world.surfaceAt(x, z),
+      blocked: (x, z, radius) => world.blocked(x, z, radius) || people(x, z, radius * PERSON_BODY),
+    };
+    return this.peopleWorld;
+  }
+  private peopleWorld: WalkWorld | null = null;
+
   private offset(): Readonly<Vec3> {
     return this.currentIsland === "lanternfall" ? LANTERNFALL_CENTER : ZERO_OFFSET;
   }
@@ -966,10 +1000,9 @@ export class CourierController {
     const result = stepWalker(walker, {
       forward: live?.forward ?? 0, strafe: live?.strafe ?? 0, run: live?.run ?? false, cameraYaw: this.cameraYaw,
       jump: this.jumpBuffer > 0,
-    }, dt, this.walkWorld);
+    }, dt, this.stepWorld());
     this.jumpBuffer = result.jumped ? 0 : Math.max(0, this.jumpBuffer - dt);
-    if (result.jumped) this.puff(DUST.takeoff, DUST.takeoffRadius);
-    if (result.landed) this.puff(DUST.landing, DUST.landingRadius);
+    if (result.landed) this.puff(Math.min(DUST.landing, DUST.most - this.dust.alive), DUST.landingRadius);
     this.runner.update("walk", this.worldWalker());
     const pressedAt = live?.takeInteract() ?? null;
     if (pressedAt === null) return;
@@ -1168,8 +1201,8 @@ export class CourierController {
     this.subject.vz = 0;
     resetGait(this.gait, this.shown.heading, this.shown.y);
     resetHumanGait(this.humanGait, this.shown.heading, this.shown.y);
-    // A spawn, teleport or landing is not a footfall: no heel puff on the first frame after it.
-    this.lastStridePhase = this.stride().phase;
+    // A spawn or teleport starts the step-puff clock afresh.
+    this.dustClock = 0;
   }
 
   /** Drive the gait from what is drawn (ground covered, speed, turning, height) and put the pose on the rig. */
@@ -1195,13 +1228,13 @@ export class CourierController {
     input.compact = this.options.freeRoam === true;
     const figure = this.courier.figure;
     if (figure) {
-      updateHumanGait(this.humanGait, { ...input, scale: figure.scale });
-      animateHuman(this.courier, humanPose(this.humanGait, this.figurePose, figure.leg));
+      updateHumanGait(this.humanGait, { ...input, scale: figure.scale, pace: figure.pace, leg: figure.leg });
+      animateHuman(this.courier, relaxPose(this.humanGait, humanPose(this.humanGait, this.figurePose, figure.leg)));
     } else {
       updateGait(this.gait, input);
       animateCourier(this.courier, gaitPose(this.gait, this.courierPose), tickValue(cycleMs(nowMs)), reduced);
     }
-    this.kickRunDust();
+    this.kickRunDust(dt);
   }
 
   /**
@@ -1216,18 +1249,25 @@ export class CourierController {
     return { phase: this.gait.phase, run: this.gait.run, air: this.gait.air };
   }
 
-  /** A puff at the heel each time a foot lands while running flat out. */
-  private kickRunDust(): void {
-    const stride = this.stride();
-    const phase = stride.phase;
-    const last = this.lastStridePhase;
-    this.lastStridePhase = phase;
-    if (!this.walker.grounded || stride.run < DUST.runFrom || stride.air > 0.1) return;
-    // A foot lands twice per cycle, at phase 0 and PI: count a crossing of either (the phase wraps at TAU).
-    const half = Math.PI;
-    if (Math.floor(phase / half) === Math.floor(last / half) && phase >= last) return;
-    const back = DUST.heelBack;
-    this.puff(DUST.step, DUST.stepRadius, -Math.sin(this.shown.heading) * back, Math.cos(this.shown.heading) * back);
+  /**
+   * While the courier moves briskly over the ground, a puff about once a second. As the reference: half a second after
+   * the last try, the next is made as soon as the courier is on the ground and moving faster than about half the jog;
+   * every other try puffs (the reference tosses a coin), at one foot then the other; never more than two in the air.
+   */
+  private kickRunDust(dt: number): void {
+    this.dustClock = Math.min(DUST.every, this.dustClock + (Number.isFinite(dt) ? Math.max(0, dt) : 0));
+    if (this.dustClock < DUST.every) return;
+    const speed = Math.hypot(this.walker.vx, this.walker.vz);
+    if (!this.walker.grounded || this.stride().air > 0.1 || !(speed >= DUST.fromSpeed)) return;
+    this.dustClock = 0;
+    this.dustTries += 1;
+    if (this.dustTries % 2 === 1 || this.dust.alive >= DUST.most) return;
+    this.dustSide = -this.dustSide;
+    // A little behind the courier (heading 0 faces −Z, so behind is (−sin, cos)) and to one side (its right is (cos, sin)).
+    const h = this.shown.heading;
+    const dx = -Math.sin(h) * DUST.back + Math.cos(h) * DUST.side * this.dustSide;
+    const dz = Math.cos(h) * DUST.back + Math.sin(h) * DUST.side * this.dustSide;
+    this.puff(1, DUST.stepRadius, dx, dz);
   }
 
   /** Kick up `count` puffs at the courier's feet (offset by dx, dz world units), unless motion is reduced. */

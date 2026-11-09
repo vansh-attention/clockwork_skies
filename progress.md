@@ -4,6 +4,23 @@ Original prompt: in the gh repo clockwork_london, use reverse-engineer-anything 
 
 User steering: the London build was too cartoonish. The character's walking did not match the reference, and the assets' shades and aura fell short. Graphics and movement come first; purpose, play and multiplayer are later.
 
+- 2026-11-09, fourteenth pass. User reports characters submerged and asks to get the NPC and character movement right first (faces left for later).
+  - **Sinking:** people now stand on the drawn London surfaces (roads 0.28, kerbs 0.34, squares, aprons, paving).
+  - **Residents:** they no longer walk backwards (a mirrored heading). They ease in and out, step at a natural cadence, and make way for the courier.
+  - **Courier:** she can no longer walk through people.
+  - **Guards:** all mutation-checked; see look-analysis.md, fourteenth pass. Nothing committed.
+- 2026-11-09, thirteenth pass. User asks: "change the faces of the characters inside the city / game … too cartoonish … the main character should look like a typical anime face as seen in the inspired game".
+  - **Residents:** faces are now drawn flush the reference's way: small eyes under a lid stroke, thin brows, a thin mouth, no nose bump. Hair now covers their crowns.
+  - **The courier:** she has the reference's calm, half-lidded anime face.
+  - **Guards:** three new tests, each failing on the old faces. See look-analysis.md, thirteenth pass. Nothing committed.
+- 2026-11-09, twelfth pass. User asks: "make her slim and chill like abeto messenger and make her look like a typical kawai anime girl". She is now a slim kawaii anime girl of her own design, and stays short.
+  - **Look:** long chestnut hair with bangs, face-framing locks and a red ribbon bow; big glossy anime eyes and a pointed chin; a cream jumper with a neck bow; a pleated navy skirt that follows each thigh; knee socks and loafers.
+  - **Carriage:** a relaxed standing carriage (`relaxPose`). Rhythm, pace and framing are unchanged. See look-analysis.md, twelfth pass. Nothing committed.
+- 2026-11-09, eleventh pass. The courier is now a short, cute girl of her own design: a chestnut bob with a fringe and red clip, big eyes, a cream jumper, navy culottes, knee socks, chunky shoes and the satchel. User asks: "make the running character a cute female kawaii girl", then "keep her short and cute just like abeto messenger".
+  - **Proportions:** `FigureLook.stature` shortens her legs (0.74) and trunk (0.9) while the head, shoes and satchel keep their size. She is 1.5 m and 4.2 heads tall.
+  - **Scaling:** camera framing, pace and gait thresholds scale with her height (`courier/size.ts`). The gait is baked for her own leg, and her jog and sprint hips swing further to keep the reference's rhythm.
+  - **Measured:** rhythm within 1% and pace within 1% in her heights; all start and stop timings inside the reference's ranges. See look-analysis.md, eleventh pass. Nothing committed.
+
 - REA static analysis of the captured shipped bundle established the reference's techniques; see `.claude/abeto-messenger/look-analysis.md` for evidence IDs and line ranges. They are:
   - shading: HSV shade rule, soft and hard cuts, hemisphere fill, glancing highlight
   - ink: noise-broken lines, inked painted patches, a nearest-sample line pass with a dark slate ink
@@ -20,7 +37,59 @@ User steering: the London build was too cartoonish. The character's walking did 
   - added: road paint (double yellows, centre lines, give-way), manholes and gullies, tarmac wear; blinds, curtains, window boxes, downpipes, string courses and wheelie bins; litter bins and bollards with colliders; a rounded black cab and a rounded double-decker
   - fixed: the camera collapsing beside parked cabs (unpadded vehicle tops, with a mutation-checked regression), and a complete pinned-courier dissolve
   - re-verified: verify exits 0 (653 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors
-- Not done (layout scale): narrower lanes and real-size vehicles. Changes remain local and uncommitted.
+- Third pass (measured in the running game against the reference; method and full tables in `.claude/abeto-messenger/look-analysis.md`):
+  - movement: the reference probe's key sequence was replayed in the game on the native GPU. Starts retuned (the old fit followed the reference's AFK start), and the pose now blends with speed. Every start, stop and blend timing falls inside the reference's measured range.
+  - camera: trails like the reference's, 3.1 heights back, over the shoulder. It slides behind the courier beside house fronts and rises over low obstacles to keep the courier in view.
+  - streets: front areas paved from house to house, terraces three to four storeys, and the walk starts in a narrow terraced street. Vehicles are real size: the cab 4.58 × 1.76 × 1.83 m, the double-decker 11.1 × 2.53 × 4.39 m.
+  - colour: road, flags, haze, sky, clouds and grade calibrated to the reference's measured tones. Road and pavement within a few RGB levels, sky within 3–10.
+  - verified: `npm run verify` exits 0 (658 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors. Each retune has a mutation-checked regression test.
+  - evidence: `artifacts/messenger-look/` (`movement-curves.png`, `compare-motion-stages.png`, `compare-shading.png`, `real-size-vehicles.png`, plus `measurements.json`).
+  - still different after the third pass: sprint rhythm, warmer lit greys, slightly lighter road shade, greener ink (all closed in the fourth pass below).
+- Fourth pass (review follow-up, 2026-11-09):
+  - rhythm: the courier walks at the reference's pace (2.11 heights/s). Steady jog 0.875 s cycle (137 steps/min) and sprint 0.876 s (137/min), against the reference's 0.871 s (138/min) for both; strides 1.85 and 2.58 heights against 1.84 and 2.60. Sprint foot slip fell from 0.18 to 0.02.
+  - colour: green-leaning whites, deeper shade, blue-slate ink. Lit greys at hue 113–126° (reference 95–132°); ink at 199–203° (201–206°); road, pavement, window glass and sky within 2–12 RGB levels. Guarded by `city/atmosphere.test.ts`.
+  - how stylised: measured on whole frames against the reference, with near-black share, vivid colour, saturation and flat fill now in or beside its range. Changes: glazing as dark slate glass, painted doors, charcoal iron, slate downpipes, softer detail outlines, red brick and jacket a step less saturated. Character proportions about 5.4 heads against the reference's 5.1.
+  - verified: `npm run verify` exits 0 (662 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors. Sheets and data are in `artifacts/messenger-look/`; tables are in `look-analysis.md`.
+  - still different after the fourth pass: near-black up to 9.2%, more colours in the low street view, lit pavement darker (all closed in the fifth pass below).
+- Fifth pass (REA, 2026-11-09):
+  - reverse-engineer-anything: the reference's main bundle was re-analysed with REA (Evidence `ev_bb2641d4…`, the shipped file's SHA-256 `3b146c7d…`), and its sky shader read from it. The sky is one flat colour, with clouds by a hard step of noise; literal traces returned no match, which REA states is not absence.
+  - sky rebuilt on that technique; street metal in the reference's own pole tone (new `iron` swatch); gentler painted value patches; lighter, green-tinted whites and flags.
+  - REA `compare_web_screenshots` on uniform matched patches (sky, cloud, road and pavement, lit and shade): all identical within 8 levels, max channel difference 0–5. Evidence IDs are in `look-analysis.md`; patches are in `artifacts/messenger-look/rea-patches/`.
+  - how stylised, as means of default-camera frames (reference / ours): saturation 0.22 / 0.20, vivid 1.9% / 2.4%, near-black 4.9% / 4.9%, flat fill 77.2% / 75.3%, colours 31.5 / 29.5.
+  - verified: `npm run verify` exits 0 (662 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors.
+  - still different: the fastest release is 4 ms quicker than the reference's quickest (within one frame); Little London is flat where the reference town is hilly (setting). Changes remain local and uncommitted.
+- Sixth pass (REA and the reference's frames, 2026-11-09):
+  - stops: brake 12.5 and pose against 0.6 of top speed. All 11 start, stop and blend timings now sit inside the reference's ranges.
+  - statistics: Welch's t-test of our frames against the reference's own spread finds no detectable difference in saturation, vivid, near-black, flat fill or colour count (p 0.45–0.95).
+  - framing: the reference world is a small planet (radial up). The earlier camera reading took world Y as up and is withdrawn. The REA-captured bundle gives a 45° lens and a follow offset of (0, 1, 5) aimed at the capsule top. Matched to five reference frames, our courier now stands 320 px tall with the head at the centre, feet near the bottom, x ≈ 500 (reference: 314–323 px, head 345–358, feet 662–678, x 485–505). The view looks at the head (`lookLift`); collisions are still judged about the chest.
+  - façades: pattern marks fade out by 7 px per unit, so mid-distance terraces read as flat colour like the reference's walls.
+  - dust: matched to the reference's `trails` particles. None at take-off, a pair on landing, about one a second while moving briskly, at most two, mid grey, a ninth of the courier's height across.
+  - verified: `npm run verify` exits 0 (664 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors. New and changed tests are mutation-checked. Sheets, captures and data are in `artifacts/messenger-look/`; tables are in `look-analysis.md`.
+  - still different: jogging framing 24 px higher than the one reference jog frame; standing and jog frames slightly less flat than the reference's least flat; dust without noise-broken edges; flat setting. Noticed but left for review: chimney smoke as outlined white spheres and worn-stucco blobs on near white walls. Changes remain local and uncommitted.
+- Seventh pass (the leftovers, from the reference's own code, 2026-11-09):
+  - smoke: rebuilt on the reference's `smokevfx` technique (`city/chimneySmoke.ts`). View-facing plumes widen as they rise, with flat translucent fill at 0.35 broken by noise flowing upward. An alpha-keeping blend leaves ids, depth, normals and the ink mask untouched, so there is no ink. Original geometry and procedural noise; one draw call, as before.
+  - walls: white stucco weathers in its own tones, in downward streaks with ragged inked edges, as the reference's walls stain. The salmon bare-brick ovals are gone.
+  - dust: puffs have ragged outlines, each turned differently.
+  - moving framing, measured against both reference moving-away frames: size within 5%; ours sits 10–65 px higher. The reference's run posture is a little lower and one frame is on a slope, so this is not tuned to two frames.
+  - verified: `npm run verify` exits 0 (666 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors. New guards are mutation-checked: smoke blend and info write, dust outline, stucco tone.
+  - still different: moving framing 10–65 px higher; the jog view slightly less flat than the reference's least flat (London terrace detail); cel-lit dust; flat setting (yours to decide). Changes remain local and uncommitted.
+- Eighth pass (2026-11-09):
+  - dust: one flat grey, lit or in shade, as the reference's unlit particles.
+  - clouds: the island's 3D bubble clouds are removed; clouds are drawn only in the sky, flat, as the reference's. One fewer draw call (70).
+  - tried and dropped: softer brick courses (they barely moved the jog view's flatness and pushed the sprint view's colour count below the reference's range).
+  - verified: `npm run verify` exits 0 (667 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors. New guards are mutation-checked. Final measures in `look-analysis.md`: no detectable difference from the reference on any stylisation measure (p 0.46–0.96).
+  - still different: moving framing 10–65 px higher than the reference's two moving frames (no side view of its run exists to measure posture); the jog view 1.6 points less flat than the reference's least flat (terrace detail); flat setting. Changes remain local and uncommitted.
+- Ninth pass (2026-11-09):
+  - running posture: matched to the reference's run in `probe-right.png`. The jog leans 14° (sprint 18°), mostly above the pelvis, carries the arms bent and close, and kicks the trailing heel higher (knee 118°). Stance keys are unchanged, so stride, rhythm and all 11 timings stay inside the reference's ranges.
+  - moving framing: the running silhouette now matches in size within 1% (jog 287 px against 288). Ours sits about 25 px higher while jogging.
+  - setting decided: Little London stays flat. The reference's tiny-planet curvature is its setting, not its rendering technique; a gentle horizon curve is available on request.
+  - verified: `npm run verify` exits 0 (668 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors. The posture guard is mutation-checked against the old lean, arms and kick.
+  - still different: jogging framing about 25 px higher; the jog view 1.4 points less flat than the reference's least flat (terrace detail). Changes remain local and uncommitted.
+- Tenth pass (2026-11-09):
+  - camera: the live trace shows the reference's camera holds a constant distance from its moving character (3.394 heights standing, jogging and sprinting). Ours fell behind by up to 0.21 heights. The follow target now keeps up (`catchUp` 1), and our distance holds while jogging (+0.002). This corrects the third pass's "trails" reading, which was taken from configuration rather than behaviour.
+  - moving framing: jogging away, the feet now match exactly (660 against 660), with size within 5%. All 11 movement timings stay inside the reference's ranges.
+  - verified: `npm run verify` exits 0 (668 client tests); space e2e 5/5; multiplayer e2e 4/4 with 0 browser errors. The camera guard is mutation-checked against the old blend.
+  - still different: the running figure 5% taller in the one reference jog frame (within stride variation); the jog view 2 points less flat than the reference's least flat (terrace detail). Changes remain local and uncommitted.
 
 ## Current direction — small cute courier and smooth reference-informed movement
 

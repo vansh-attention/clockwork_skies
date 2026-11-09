@@ -7,7 +7,8 @@ import { createIllustratedMaterial } from "@clockwork/render";
  * joints instead of hinging as separate parts. All figures face −Z with their feet at y = 0; their left is −X.
  *
  * The geometry is original and generated here; proportions follow an adult of about 5.8 heads (a touch of youth in the
- * head size, without a toy's short legs).
+ * head size, without a toy's short legs). A look can make the figure shorter and stubbier (FigureLook.stature), as the
+ * courier is.
  */
 
 export type FigureLook = Readonly<{
@@ -17,7 +18,8 @@ export type FigureLook = Readonly<{
   build?: number;
   skin: string;
   hair: string;
-  hairStyle?: "short" | "bob" | "bun";
+  /** "long": a bob's shell with long hair down the back and locks framing the face. */
+  hairStyle?: "short" | "bob" | "bun" | "long";
   jacket: string;
   /** Cuffs, hem and collar. */
   trim: string;
@@ -30,13 +32,60 @@ export type FigureLook = Readonly<{
   cap?: string;
   /** A leather satchel on a strap across the chest, or none. */
   bag?: Readonly<{ body: string; flap: string; strap: string }>;
+  /**
+   * Head size against the default (1). The neck shortens to match, so the crown stays where it was and the figure's
+   * height, legs and gait are unchanged: a bigger head on a short neck reads younger.
+   */
+  head?: number;
+  /**
+   * "plain" (default): drawn the reference's way, flush with the face: small dark eyes under a lid stroke, thin brows,
+   * a thin mouth, no nose bump. "anime": a calm, half-lidded anime face like the reference's own character's: almond
+   * eyes under a heavy lid line flicked out at the corner, a dark iris, a lid crease, thin brows, a small pointed
+   * chin. "cute": larger round eyes with a highlight and a little blush.
+   */
+  face?: "plain" | "cute" | "anime";
+  /** The lower, lit part of an anime iris. */
+  iris?: string;
+  /** A fringe across the forehead. */
+  fringe?: boolean;
+  /** A hair clip's colour, or none. */
+  clip?: string;
+  /** A ribbon bow tied at the back of the head, or none. */
+  ribbon?: string;
+  /** A small ribbon bow at the neckline, or none. */
+  bow?: string;
+  /** Arm and lower-leg thickness (1 = the default). */
+  limbs?: number;
+  /** Hand size (1 = the default); by default hands follow `limbs` halfway. */
+  hands?: number;
+  /**
+   * "culottes": wide cropped trousers ending at the knee, over knee socks. "skirt": a flared, pleated skirt to
+   * mid-thigh (its colour is `trousers`), bare knees and knee socks. Default: full-length trousers.
+   */
+  legs?: "trousers" | "culottes" | "skirt";
+  /** Shoe width and height (1 = the default chunky shoe); the length stays, so the stride is unchanged. */
+  feet?: number;
+  /** A top hanging to the hips, as an oversized jumper does (default: a short jacket ending at the waist). */
+  longTop?: boolean;
+  /**
+   * A shorter, stubbier figure: the legs (ankle to hip) and trunk (hip to chin) are drawn this much shorter, while
+   * the head, hands, shoes and satchel keep their size. The arms shorten with the trunk. Default: full length.
+   */
+  stature?: Readonly<{ legs: number; trunk: number }>;
 }>;
 
-/** The courier: a flat tweed cap, a mustard work jacket, dark teal trousers turned up over cream socks, a satchel. */
+/**
+ * The courier: a young London courier girl, drawn as a slim, easy-going kawaii anime girl in the reference's spirit
+ * (short, about 1.5 m and 4.2 heads against a 2.8 m storey, with a big head) but her own design. Long chestnut hair
+ * with blunt bangs, locks framing her face and a red ribbon bow at the back; a calm, half-lidded anime face; a cream jumper
+ * with a red bow at the neck; a pleated navy skirt, cream knee socks and brown loafers; a leather satchel. Her
+ * height is COURIER_HEIGHT (size.ts), which the camera and pace are scaled by.
+ */
 export const COURIER_LOOK: FigureLook = {
-  skin: "#e1b597", hair: "#3a2b25", hairStyle: "short",
-  jacket: "#c99a3c", trim: "#a77a2c", trousers: "#2f4b56", turnup: "#4a6a74", socks: "#ece4d1", shoes: "#3b2c27",
-  cap: "#5b5d61", bag: { body: "#8c5737", flap: "#9b6340", strap: "#5a3a2a" },
+  head: 1.22, face: "anime", iris: "#5e3a2e", build: 0.84, limbs: 0.8, hands: 0.74, feet: 0.86, stature: { legs: 0.74, trunk: 0.9 },
+  skin: "#f2cdb5", hair: "#4a2f2a", hairStyle: "long", fringe: true, ribbon: "#c4473a", bow: "#c4473a",
+  jacket: "#ece4d0", trim: "#b65846", legs: "skirt", trousers: "#2e4859", socks: "#eee8dc", shoes: "#4a2e26",
+  bag: { body: "#8c5737", flap: "#9b6340", strap: "#5a3a2a" },
 };
 
 /** Base proportions (scale 1). Joint positions are in the figure's own space. */
@@ -50,6 +99,11 @@ const BASE = {
   wrist: { x: 0.49, y: 1.73 },
   hips: 1.86, spine: 2.16, chest: 2.56, neck: 3.04, head: 3.22,
 } as const;
+/** The chin's height and the head's height from chin to crown, at the default head size. */
+const CHIN = 3.16;
+const HEAD_SPAN = 0.625;
+/** How far a head of `size` (FigureLook.head) sits lower than the default, so its crown stays where it was. */
+const headDrop = (size: number) => (size - 1) * HEAD_SPAN;
 
 /** The leg's dimensions, which the gait needs to keep a planted foot on the ground. */
 export type LegDimensions = Readonly<{
@@ -86,6 +140,9 @@ export type Figure = {
   hipsRest: THREE.Vector3;
   scale: number;
   height: number;
+  /** The figure's height against the base figure's (BASE.height): what the gait's speed thresholds scale with. */
+  pace: number;
+  /** This figure's own leg (shorter for a stubby stature), in figure units before `scale`. */
   leg: LegDimensions;
 };
 
@@ -104,7 +161,8 @@ export function createFigureMaterial(): THREE.ShaderMaterial {
 }
 
 type Skin = readonly [bone: number, other?: number, otherWeight?: number];
-type Ring = Readonly<{ at: THREE.Vector3; rx: number; rz: number; skin: Skin }>;
+/** `pleat`: how deep the ring's pleats fold in (0 none), for a pleated skirt (LoftOptions.pleats). */
+type Ring = Readonly<{ at: THREE.Vector3; rx: number; rz: number; skin: Skin; pleat?: number }>;
 type LoftOptions = Readonly<{
   segments: number;
   garment: keyof typeof GARMENT;
@@ -117,6 +175,10 @@ type LoftOptions = Readonly<{
   flatFront?: number;
   /** The direction a ring's z-radius points (default: the figure's front, −Z). */
   facing?: THREE.Vector3;
+  /** Pleats round each ring (folded in by Ring.pleat). */
+  pleats?: number;
+  /** Per-vertex skin, overriding the ring's: a skirt follows each thigh on its own side. */
+  skinAt?: (ring: Ring, point: THREE.Vector3) => Skin;
 }>;
 
 /** Collects the figure's vertices with their skin, colour and garment; merges into one skinned geometry. */
@@ -179,8 +241,9 @@ class FigureBuilder {
         }
         let along = s * ring.rz;
         if (options.flatFront && s > 0 && Math.abs(c) < 0.8) along = Math.min(along, ring.rz * (1 - options.flatFront * (1 - Math.abs(c) * 0.5)));
-        const p = ring.at.clone().addScaledVector(side, c * ring.rx).addScaledVector(front, along);
-        this.vertex(p, ring.skin, color, garment);
+        const fold = options.pleats && ring.pleat ? 1 - ring.pleat * Math.abs(Math.sin(theta * options.pleats * 0.5)) : 1;
+        const p = ring.at.clone().addScaledVector(side, c * ring.rx * fold).addScaledVector(front, along * fold);
+        this.vertex(p, options.skinAt ? options.skinAt(ring, p) : ring.skin, color, garment);
       }
     });
     for (let r = 0; r < rings.length - 1; r += 1) {
@@ -241,39 +304,92 @@ function addLeg(builder: FigureBuilder, look: FigureLook, side: -1 | 1, w: numbe
   const L = side < 0 ? "L" : "R";
   const thigh = BONE[`thigh${L}`], shin = BONE[`shin${L}`], foot = BONE[`foot${L}`];
   const x = side * BASE.hipJoint.x * w;
-  const legRings: [number, number, number, Skin][] = [
-    [2.04, 0.2 * w, 0.215, [BONE.hips, thigh, 0.25]],
-    [1.86, 0.205 * w, 0.22, [BONE.hips, thigh, 0.6]],
-    [1.68, 0.2 * w, 0.212, [BONE.hips, thigh, 0.92]],
-    [1.42, 0.186 * w, 0.198, [thigh]],
-    [1.18, 0.164, 0.176, [thigh]],
-    [1.03, 0.152, 0.16, [thigh, shin, 0.25]],
-    [0.94, 0.15, 0.156, [thigh, shin, 0.75]],
-    [0.82, 0.152, 0.16, [shin]],
-    [0.68, 0.156, 0.162, [shin]],
-    [0.54, 0.142, 0.148, [shin]],
-    [0.44, 0.14, 0.146, [shin]],
-  ];
-  builder.loft(legRings.map(([y, rx, rz, skin]) => ({ at: v(x, y, 0.01), rx, rz, skin })), { segments: 14, garment: "trousers", color: look.trousers });
-  if (look.turnup) {
+  const limb = look.limbs ?? 1;
+  if (look.legs === "skirt") {
+    // Slim bare legs under the skirt (the skirt itself is part of the body), then knee socks with a turned top.
     builder.loft([
-      { at: v(x, 0.53, 0.01), rx: 0.152, rz: 0.158, skin: [shin] },
-      { at: v(x, 0.47, 0.01), rx: 0.158, rz: 0.164, skin: [shin] },
-      { at: v(x, 0.41, 0.01), rx: 0.152, rz: 0.158, skin: [shin] },
-    ], { segments: 14, garment: "turnup", color: look.turnup, capEnd: true });
+      { at: v(x, 1.98, 0.01), rx: 0.16 * w, rz: 0.17, skin: [BONE.hips, thigh, 0.4] },
+      { at: v(x, 1.72, 0.01), rx: 0.155 * limb, rz: 0.162 * limb, skin: [BONE.hips, thigh, 0.9] },
+      { at: v(x, 1.42, 0.01), rx: 0.142 * limb, rz: 0.15 * limb, skin: [thigh] },
+      { at: v(x, 1.14, 0.01), rx: 0.122 * limb, rz: 0.13 * limb, skin: [thigh] },
+      { at: v(x, 0.97, 0.012), rx: 0.112 * limb, rz: 0.12 * limb, skin: [thigh, shin, 0.6] },
+      { at: v(x, 0.86, 0.012), rx: 0.108 * limb, rz: 0.116 * limb, skin: [shin] },
+    ], { segments: 12, garment: "skin", color: look.skin, capStart: true });
+    builder.loft([
+      { at: v(x, 0.91, 0.012), rx: 0.124 * limb, rz: 0.132 * limb, skin: [thigh, shin, 0.85] },
+      { at: v(x, 0.85, 0.012), rx: 0.122 * limb, rz: 0.13 * limb, skin: [shin] },
+      { at: v(x, 0.7, 0.014), rx: 0.122 * limb, rz: 0.128 * limb, skin: [shin] },
+      { at: v(x, 0.52, 0.018), rx: 0.1 * limb, rz: 0.106 * limb, skin: [shin] },
+      { at: v(x, 0.3, 0.025), rx: 0.08, rz: 0.084, skin: [shin, foot, 0.2] },
+      { at: v(x, 0.19, 0.03), rx: 0.08, rz: 0.084, skin: [shin, foot, 0.7] },
+    ], { segments: 12, garment: "socks", color: look.socks });
+  } else if (look.legs === "culottes") {
+    // Wide cropped trousers, flaring a little to a hem just below the knee, turned in so the open end never shows.
+    const culotteRings: [number, number, number, Skin][] = [
+      [2.04, 0.2 * w, 0.215, [BONE.hips, thigh, 0.25]],
+      [1.86, 0.21 * w, 0.222, [BONE.hips, thigh, 0.6]],
+      [1.68, 0.215 * w, 0.226, [BONE.hips, thigh, 0.92]],
+      [1.42, 0.222, 0.232, [thigh]],
+      [1.18, 0.232, 0.24, [thigh]],
+      [1.0, 0.244, 0.25, [thigh, shin, 0.3]],
+      [0.95, 0.24, 0.246, [thigh, shin, 0.45]],
+    ];
+    builder.loft(culotteRings.map(([y, rx, rz, skin]) => ({ at: v(x, y, 0.01), rx, rz, skin })), { segments: 14, garment: "trousers", color: look.trousers });
+    builder.loft([
+      { at: v(x, 0.95, 0.01), rx: 0.24, rz: 0.246, skin: [thigh, shin, 0.45] },
+      { at: v(x, 0.975, 0.01), rx: 0.16 * limb, rz: 0.166 * limb, skin: [thigh, shin, 0.4] },
+    ], { segments: 14, garment: "trousers", color: look.trousers });
+    // The knee, showing a little between the hem and the socks.
+    builder.loft([
+      { at: v(x, 1.1, 0.01), rx: 0.15 * limb, rz: 0.156 * limb, skin: [thigh] },
+      { at: v(x, 0.97, 0.01), rx: 0.138 * limb, rz: 0.144 * limb, skin: [thigh, shin, 0.6] },
+      { at: v(x, 0.87, 0.012), rx: 0.13 * limb, rz: 0.136 * limb, skin: [shin] },
+    ], { segments: 12, garment: "skin", color: look.skin });
+    // Knee socks, with a turned top, down the calf to the ankle.
+    builder.loft([
+      { at: v(x, 0.9, 0.012), rx: 0.142 * limb, rz: 0.148 * limb, skin: [shin] },
+      { at: v(x, 0.85, 0.012), rx: 0.14 * limb, rz: 0.146 * limb, skin: [shin] },
+      { at: v(x, 0.7, 0.014), rx: 0.136 * limb, rz: 0.142 * limb, skin: [shin] },
+      { at: v(x, 0.52, 0.018), rx: 0.112 * limb, rz: 0.118 * limb, skin: [shin] },
+      { at: v(x, 0.3, 0.025), rx: 0.092, rz: 0.094, skin: [shin, foot, 0.2] },
+      { at: v(x, 0.19, 0.03), rx: 0.09, rz: 0.094, skin: [shin, foot, 0.7] },
+    ], { segments: 12, garment: "socks", color: look.socks });
+  } else {
+    const legRings: [number, number, number, Skin][] = [
+      [2.04, 0.2 * w, 0.215, [BONE.hips, thigh, 0.25]],
+      [1.86, 0.205 * w, 0.22, [BONE.hips, thigh, 0.6]],
+      [1.68, 0.2 * w, 0.212, [BONE.hips, thigh, 0.92]],
+      [1.42, 0.186 * w, 0.198, [thigh]],
+      [1.18, 0.164, 0.176, [thigh]],
+      [1.03, 0.152, 0.16, [thigh, shin, 0.25]],
+      [0.94, 0.15, 0.156, [thigh, shin, 0.75]],
+      [0.82, 0.152, 0.16, [shin]],
+      [0.68, 0.156, 0.162, [shin]],
+      [0.54, 0.142, 0.148, [shin]],
+      [0.44, 0.14, 0.146, [shin]],
+    ];
+    builder.loft(legRings.map(([y, rx, rz, skin]) => ({ at: v(x, y, 0.01), rx, rz, skin })), { segments: 14, garment: "trousers", color: look.trousers });
+    if (look.turnup) {
+      builder.loft([
+        { at: v(x, 0.53, 0.01), rx: 0.152, rz: 0.158, skin: [shin] },
+        { at: v(x, 0.47, 0.01), rx: 0.158, rz: 0.164, skin: [shin] },
+        { at: v(x, 0.41, 0.01), rx: 0.152, rz: 0.158, skin: [shin] },
+      ], { segments: 14, garment: "turnup", color: look.turnup, capEnd: true });
+    }
+    builder.loft([
+      { at: v(x, 0.46, 0.02), rx: 0.098, rz: 0.1, skin: [shin] },
+      { at: v(x, 0.3, 0.025), rx: 0.092, rz: 0.094, skin: [shin, foot, 0.2] },
+      { at: v(x, 0.19, 0.03), rx: 0.09, rz: 0.094, skin: [shin, foot, 0.7] },
+    ], { segments: 12, garment: "socks", color: look.socks });
   }
-  builder.loft([
-    { at: v(x, 0.46, 0.02), rx: 0.098, rz: 0.1, skin: [shin] },
-    { at: v(x, 0.3, 0.025), rx: 0.092, rz: 0.094, skin: [shin, foot, 0.2] },
-    { at: v(x, 0.19, 0.03), rx: 0.09, rz: 0.094, skin: [shin, foot, 0.7] },
-  ], { segments: 12, garment: "socks", color: look.socks });
   // The shoe, lofted heel to toe along −Z, its sole on the ground at rest.
   const ankleZ = 0.04;
   const shoe: [z: number, halfWidth: number, halfHeight: number, centreY: number][] = [
     [0.18, 0.06, 0.06, 0.08], [0.15, 0.1, 0.095, 0.095], [0.06, 0.115, 0.115, 0.115], [-0.06, 0.12, 0.1, 0.1],
     [-0.2, 0.125, 0.085, 0.085], [-0.33, 0.118, 0.072, 0.072], [-0.42, 0.092, 0.058, 0.06], [-0.47, 0.04, 0.03, 0.05],
   ];
-  builder.loft(shoe.map(([z, hw, hh, cy]) => ({ at: v(x, cy, ankleZ + z), rx: hw, rz: hh, skin: [foot] as Skin })), {
+  const k = look.feet ?? 1;
+  builder.loft(shoe.map(([z, hw, hh, cy]) => ({ at: v(x, cy * k, ankleZ + z), rx: hw * k, rz: hh * k, skin: [foot] as Skin })), {
     segments: 14, garment: "shoes", color: look.shoes, capStart: true, capEnd: true, boxy: 0.3, facing: v(0, 1, 0),
   });
 }
@@ -285,36 +401,38 @@ function addArm(builder: FigureBuilder, look: FigureLook, side: -1 | 1, w: numbe
   const shoulder = v(side * BASE.shoulder.x * w, BASE.shoulder.y, 0.02);
   const elbow = v(side * (BASE.elbow.x * w + 0.02), BASE.elbow.y, 0.04);
   const wrist = v(side * (BASE.wrist.x * w + 0.03), BASE.wrist.y, 0.0);
+  const limb = look.limbs ?? 1;
+  const handSize = look.hands ?? 0.5 + 0.5 * limb;
   // The sleeve starts just inside the jacket's sloping shoulder, so no peak shows above the arm.
   const up = mix(shoulder, elbow, -0.04).add(v(-side * 0.03, 0, 0));
   builder.loft([
-    { at: up, rx: 0.125, rz: 0.15, skin: [BONE.chest, clavicle, 0.6] },
-    { at: shoulder, rx: 0.152, rz: 0.165, skin: [clavicle, upper, 0.65] },
-    { at: mix(shoulder, elbow, 0.22), rx: 0.152, rz: 0.158, skin: [upper] },
-    { at: mix(shoulder, elbow, 0.55), rx: 0.138, rz: 0.142, skin: [upper] },
-    { at: mix(shoulder, elbow, 0.86), rx: 0.126, rz: 0.13, skin: [upper, fore, 0.3] },
-    { at: elbow, rx: 0.122, rz: 0.126, skin: [upper, fore, 0.55] },
-    { at: mix(elbow, wrist, 0.14), rx: 0.124, rz: 0.128, skin: [upper, fore, 0.85] },
-    { at: mix(elbow, wrist, 0.5), rx: 0.122, rz: 0.124, skin: [fore] },
-    { at: mix(elbow, wrist, 0.8), rx: 0.11, rz: 0.112, skin: [fore] },
+    { at: up, rx: 0.125 * limb, rz: 0.15 * limb, skin: [BONE.chest, clavicle, 0.6] },
+    { at: shoulder, rx: 0.152 * limb, rz: 0.165 * limb, skin: [clavicle, upper, 0.65] },
+    { at: mix(shoulder, elbow, 0.22), rx: 0.152 * limb, rz: 0.158 * limb, skin: [upper] },
+    { at: mix(shoulder, elbow, 0.55), rx: 0.138 * limb, rz: 0.142 * limb, skin: [upper] },
+    { at: mix(shoulder, elbow, 0.86), rx: 0.126 * limb, rz: 0.13 * limb, skin: [upper, fore, 0.3] },
+    { at: elbow, rx: 0.122 * limb, rz: 0.126 * limb, skin: [upper, fore, 0.55] },
+    { at: mix(elbow, wrist, 0.14), rx: 0.124 * limb, rz: 0.128 * limb, skin: [upper, fore, 0.85] },
+    { at: mix(elbow, wrist, 0.5), rx: 0.122 * limb, rz: 0.124 * limb, skin: [fore] },
+    { at: mix(elbow, wrist, 0.8), rx: 0.11 * limb, rz: 0.112 * limb, skin: [fore] },
   ], { segments: 12, garment: "jacket", color: look.jacket });
   builder.loft([
-    { at: mix(elbow, wrist, 0.78), rx: 0.118, rz: 0.12, skin: [fore] },
-    { at: mix(elbow, wrist, 0.9), rx: 0.12, rz: 0.122, skin: [fore] },
-    { at: mix(elbow, wrist, 0.97), rx: 0.112, rz: 0.114, skin: [fore] },
+    { at: mix(elbow, wrist, 0.78), rx: 0.118 * limb, rz: 0.12 * limb, skin: [fore] },
+    { at: mix(elbow, wrist, 0.9), rx: 0.12 * limb, rz: 0.122 * limb, skin: [fore] },
+    { at: mix(elbow, wrist, 0.97), rx: 0.112 * limb, rz: 0.114 * limb, skin: [fore] },
   ], { segments: 12, garment: "trim", color: look.trim, capEnd: true });
   // A relaxed hand: wrist, palm and loosely closed fingers in one mitten, with a thumb toward the front.
   const down = wrist.clone().sub(elbow).normalize();
   const along = (d: number) => wrist.clone().addScaledVector(down, d);
   builder.loft([
-    { at: along(-0.06), rx: 0.07, rz: 0.066, skin: [fore, hand, 0.5] },
-    { at: along(0.03), rx: 0.074, rz: 0.06, skin: [hand] },
-    { at: along(0.13), rx: 0.092, rz: 0.058, skin: [hand] },
-    { at: along(0.22), rx: 0.094, rz: 0.054, skin: [hand] },
-    { at: along(0.3), rx: 0.08, rz: 0.05, skin: [hand] },
-    { at: along(0.355), rx: 0.04, rz: 0.03, skin: [hand] },
+    { at: along(-0.06), rx: 0.07 * handSize, rz: 0.066 * handSize, skin: [fore, hand, 0.5] },
+    { at: along(0.03), rx: 0.074 * handSize, rz: 0.06 * handSize, skin: [hand] },
+    { at: along(0.13), rx: 0.092 * handSize, rz: 0.058 * handSize, skin: [hand] },
+    { at: along(0.22), rx: 0.094 * handSize, rz: 0.054 * handSize, skin: [hand] },
+    { at: along(0.3), rx: 0.08 * handSize, rz: 0.05 * handSize, skin: [hand] },
+    { at: along(0.355), rx: 0.04 * handSize, rz: 0.03 * handSize, skin: [hand] },
   ], { segments: 10, garment: "skin", color: look.skin, capEnd: true, facing: v(-side, 0, 0) });
-  builder.blob(along(0.12).add(v(-side * 0.04, 0, -0.065)), v(0.032, 0.075, 0.032), [hand], "skin", look.skin, [8, 6]);
+  builder.blob(along(0.12).add(v(-side * 0.04, 0, -0.065)), v(0.032 * handSize, 0.075 * handSize, 0.032 * handSize), [hand], "skin", look.skin, [8, 6]);
 }
 
 /** The side a strap path faces (its middle point's z sign), so its flat side lies on the jacket. */
@@ -325,80 +443,216 @@ function strapFacing(path: readonly [number, number, number, Skin][]): number {
 /** The torso (jacket over a waistband), neck, head, face and hair; the cap and the satchel when the look has them. */
 function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
   const { hips, spine, chest, neck, head, eyes, bag } = BONE;
-  // Seat and waist of the trousers, inside the jacket's hem.
+  // A bigger head sits lower on a shorter neck, so the crown stays put (FigureLook.head): every point of the head is
+  // scaled about the chin and lowered by the head's extra height. At the default size this changes nothing.
+  const s = look.head ?? 1;
+  const drop = headDrop(s);
+  const hp = (x: number, y: number, z: number) => v(x * s, CHIN + (y - CHIN) * s - drop, z * s);
+  const sized = (x: number, y: number, z: number) => v(x, y, z).multiplyScalar(s);
+  if (look.legs === "skirt") {
+    // A flared, pleated skirt from the waist (inside the top's hem) to mid-thigh. Each side follows its own thigh,
+    // more toward the hem, so a striding leg carries the skirt with it instead of pushing through.
+    const top = 2.1, hem = 1.22;
+    const skirt: Ring[] = [
+      { at: v(0, top, 0.0), rx: 0.32 * w, rz: 0.23, skin: [hips] },
+      { at: v(0, 1.95, 0.01), rx: 0.335 * w, rz: 0.245, skin: [hips], pleat: 0.03 },
+      { at: v(0, 1.8, 0.015), rx: 0.37, rz: 0.29, skin: [hips], pleat: 0.06 },
+      { at: v(0, 1.6, 0.02), rx: 0.42, rz: 0.34, skin: [hips], pleat: 0.08 },
+      { at: v(0, 1.4, 0.02), rx: 0.46, rz: 0.375, skin: [hips], pleat: 0.09 },
+      { at: v(0, hem, 0.02), rx: 0.49, rz: 0.4, skin: [hips], pleat: 0.09 },
+      { at: v(0, hem + 0.03, 0.02), rx: 0.45, rz: 0.365, skin: [hips], pleat: 0.09 },
+    ];
+    const thighs = [BONE.thighL, BONE.thighR] as const;
+    builder.loft(skirt, {
+      segments: 32, garment: "trousers", color: look.trousers, capStart: true, pleats: 16,
+      skinAt: (ring, p) => {
+        const down = Math.min(1, Math.max(0, (top - ring.at.y) / (top - hem)));
+        const across = Math.min(1, Math.abs(p.x) / 0.16);
+        return [hips, thighs[p.x < 0 ? 0 : 1], 0.6 * down * down * across];
+      },
+    });
+  } else {
+    // Seat and waist of the trousers, inside the jacket's hem.
+    builder.loft([
+      { at: v(0, 1.64, 0.02), rx: 0.3 * w, rz: 0.2, skin: [hips] },
+      { at: v(0, 1.78, 0.02), rx: 0.36 * w, rz: 0.235, skin: [hips] },
+      { at: v(0, 1.94, 0.01), rx: 0.37 * w, rz: 0.24, skin: [hips] },
+      { at: v(0, 2.06, 0.0), rx: 0.355 * w, rz: 0.232, skin: [hips, spine, 0.3] },
+    ], { segments: 18, garment: "trousers", color: look.trousers, capStart: true });
+  }
+  // The top: a short work jacket ending at the waist, or an oversized jumper hanging to the hips. Fuller over the
+  // chest, with sloped shoulders; its neckline sits lower under a bigger head.
+  const hem: Ring[] = look.longTop
+    ? [{ at: v(0, 1.72, 0.02), rx: 0.43 * w, rz: 0.305, skin: [hips] }, { at: v(0, 1.9, 0.02), rx: 0.415 * w, rz: 0.295, skin: [hips] }]
+    : [{ at: v(0, 1.9, 0.02), rx: 0.405 * w, rz: 0.29, skin: [hips] }];
   builder.loft([
-    { at: v(0, 1.64, 0.02), rx: 0.3 * w, rz: 0.2, skin: [hips] },
-    { at: v(0, 1.78, 0.02), rx: 0.36 * w, rz: 0.235, skin: [hips] },
-    { at: v(0, 1.94, 0.01), rx: 0.37 * w, rz: 0.24, skin: [hips] },
-    { at: v(0, 2.06, 0.0), rx: 0.355 * w, rz: 0.232, skin: [hips, spine, 0.3] },
-  ], { segments: 18, garment: "trousers", color: look.trousers, capStart: true });
-  // The jacket: a short work jacket ending at the waist, fuller over the chest, with sloped shoulders.
-  builder.loft([
-    { at: v(0, 1.9, 0.02), rx: 0.405 * w, rz: 0.29, skin: [hips] },
+    ...hem,
     { at: v(0, 2.06, 0.015), rx: 0.395 * w, rz: 0.278, skin: [hips, spine, 0.45] },
     { at: v(0, 2.26, 0.01), rx: 0.38 * w, rz: 0.265, skin: [spine] },
     { at: v(0, 2.5, 0.0), rx: 0.41 * w, rz: 0.278, skin: [spine, chest, 0.55] },
     { at: v(0, 2.72, 0.0), rx: 0.44 * w, rz: 0.288, skin: [chest] },
     { at: v(0, 2.88, 0.01), rx: 0.46 * w, rz: 0.27, skin: [chest] },
-    { at: v(0, 2.97, 0.02), rx: 0.41 * w, rz: 0.235, skin: [chest] },
-    { at: v(0, 3.05, 0.025), rx: 0.235, rz: 0.19, skin: [chest, neck, 0.3] },
+    { at: v(0, 2.97 - drop * 0.4, 0.02), rx: 0.41 * w, rz: 0.235, skin: [chest] },
+    { at: v(0, 3.05 - drop * 0.6, 0.025), rx: 0.235, rz: 0.19, skin: [chest, neck, 0.3] },
   ], { segments: 20, garment: "jacket", color: look.jacket, capStart: true, capEnd: true });
   // The hem band and a stand-up collar in the trim colour.
+  const hemY = look.longTop ? 1.79 : 1.95;
+  const hemRx = (look.longTop ? 0.438 : 0.412) * w, hemRz = look.longTop ? 0.312 : 0.296;
   builder.loft([
-    { at: v(0, 1.95, 0.02), rx: 0.412 * w, rz: 0.296, skin: [hips] },
-    { at: v(0, 1.87, 0.02), rx: 0.414 * w, rz: 0.298, skin: [hips] },
+    { at: v(0, hemY, 0.02), rx: hemRx, rz: hemRz, skin: [hips] },
+    { at: v(0, hemY - 0.08, 0.02), rx: hemRx + 0.002, rz: hemRz + 0.002, skin: [hips] },
   ], { segments: 20, garment: "trim", color: look.trim, capEnd: true });
   builder.loft([
-    { at: v(0, 3.0, 0.03), rx: 0.215, rz: 0.2, skin: [chest] },
-    { at: v(0, 3.1, 0.035), rx: 0.2, rz: 0.19, skin: [chest, neck, 0.5] },
-    { at: v(0, 3.15, 0.04), rx: 0.19, rz: 0.18, skin: [neck] },
-  ], { segments: 16, garment: "trim", color: look.trim });
-  // Neck.
+    { at: v(0, 3.0 - drop * 1.1, 0.03), rx: 0.215, rz: 0.2, skin: [chest] },
+    { at: v(0, 3.1 - drop * 1.1, 0.035), rx: 0.2, rz: 0.19, skin: [chest, neck, 0.5] },
+    { at: v(0, 3.15 - drop * 1.1, 0.04), rx: 0.19, rz: 0.18, skin: [neck] },
+  ], { segments: 16, garment: "trim", color: look.longTop || look.bow ? look.jacket : look.trim });
+  if (look.bow) {
+    // A small ribbon bow at the front of the neckline: two loops, a knot and two short tails.
+    const at = v(0, 2.9 - drop * 0.6, -0.2);
+    for (const side of [-1, 1]) {
+      builder.blob(at.clone().add(v(side * 0.055, 0.005, -0.012)), v(0.055, 0.032, 0.02), [chest], "cap", look.bow, [8, 5]);
+      builder.blob(at.clone().add(v(side * 0.03, -0.06, -0.01)), v(0.018, 0.05, 0.012), [chest], "cap", look.bow, [6, 4]);
+    }
+    builder.blob(at.clone().add(v(0, 0, -0.022)), v(0.022, 0.026, 0.018), [chest], "cap", look.bow, [6, 4]);
+  }
+  // Neck, shorter under a bigger head.
+  const neckY = (y: number) => 3.0 + (y - 3.0) * Math.max(0.3, (0.26 - drop) / 0.26);
   builder.loft([
-    { at: v(0, 3.0, 0.03), rx: 0.105, rz: 0.11, skin: [chest, neck, 0.5] },
-    { at: v(0, 3.14, 0.025), rx: 0.098, rz: 0.104, skin: [neck] },
-    { at: v(0, 3.26, 0.02), rx: 0.1, rz: 0.106, skin: [neck, head, 0.7] },
+    { at: v(0, neckY(3.0), 0.03), rx: 0.105, rz: 0.11, skin: [chest, neck, 0.5] },
+    { at: v(0, neckY(3.14), 0.025), rx: 0.098, rz: 0.104, skin: [neck] },
+    { at: v(0, neckY(3.26), 0.02), rx: 0.1, rz: 0.106, skin: [neck, head, 0.7] },
   ], { segments: 12, garment: "skin", color: look.skin });
   // Head: chin to crown, with a flatter face.
+  // An anime face narrows to a small pointed chin.
+  const jaw: [y: number, rx: number, rz: number, z: number][] = look.face === "anime"
+    ? [[3.16, 0.045, 0.045, -0.15], [3.2, 0.1, 0.11, -0.1], [3.27, 0.165, 0.19, -0.05], [3.36, 0.212, 0.234, -0.015]]
+    : [[3.16, 0.07, 0.06, -0.135], [3.2, 0.13, 0.13, -0.085], [3.27, 0.185, 0.2, -0.04], [3.36, 0.218, 0.236, -0.012]];
   const headRings: [y: number, rx: number, rz: number, z: number][] = [
-    [3.16, 0.07, 0.06, -0.135], [3.2, 0.13, 0.13, -0.085], [3.27, 0.185, 0.2, -0.04], [3.36, 0.218, 0.236, -0.012],
+    ...jaw,
     [3.47, 0.232, 0.25, 0.0], [3.58, 0.232, 0.252, 0.008], [3.67, 0.205, 0.228, 0.012], [3.74, 0.14, 0.16, 0.014], [3.785, 0.03, 0.035, 0.014],
   ];
-  builder.loft(headRings.map(([y, rx, rz, z]) => ({ at: v(0, y, z), rx, rz, skin: [head] as Skin })), {
+  builder.loft(headRings.map(([y, rx, rz, z]) => ({ at: hp(0, y, z), rx: rx * s, rz: rz * s, skin: [head] as Skin })), {
     segments: 20, garment: "skin", color: look.skin, capStart: true, capEnd: true, flatFront: 0.22,
   });
-  // Ears, nose, eyes and brows.
-  for (const side of [-1, 1]) builder.blob(v(side * 0.232, 3.44, 0.02), v(0.035, 0.07, 0.05), [head], "skin", look.skin, [8, 6]);
-  builder.blob(v(0, 3.4, -0.218), v(0.036, 0.05, 0.04), [head], "skin", look.skin, [8, 6]);
-  for (const side of [-1, 1]) {
-    builder.blob(v(side * 0.086, 3.46, -0.205), v(0.025, 0.037, 0.018), [eyes], "eyes", look.hair, [10, 8]);
-    builder.blob(v(side * 0.092, 3.535, -0.206), v(0.055, 0.012, 0.02), [head], "hair", look.hair, [8, 4]);
+  // Ears, except under a cute bob, which covers them.
+  if (look.face !== "cute" && look.face !== "anime") for (const side of [-1, 1]) builder.blob(hp(side * 0.232, 3.44, 0.02), sized(0.035, 0.07, 0.05), [head], "skin", look.skin, [8, 6]);
+  // Faces are drawn the reference's way: features painted almost flush with the face, read as strokes rather than
+  // bumps. A dark upper-lid stroke over a small iris, thin brows, a thin mouth; no nose bump and no blush.
+  const flush = (x: number, y: number, z: number, w: number, h: number, bone: number, garment: "skin" | "eyes" | "hair", colour: string, depth = 0.005) =>
+    builder.blob(hp(x, y, z), sized(w, h, depth), [bone], garment, colour, [10, 5]);
+  if (look.face === "anime") {
+    // A calm anime face, half-lidded as the reference's own character looks: almond eyes under a heavy lid line that
+    // flicks out at the outer corner, a dark iris tucked under it lit warm at its foot, a sliver of white each side,
+    // one small highlight, a faint lid crease above. All on the eyes bone, so a blink closes the whole eye.
+    for (const side of [-1, 1]) {
+      const x = side * 0.1;
+      flush(x, 3.42, -0.201, 0.05, 0.022, eyes, "eyes", "#f6f1e8");
+      flush(x, 3.418, -0.203, 0.024, 0.028, eyes, "eyes", "#2a1c22");
+      flush(x, 3.406, -0.205, 0.016, 0.011, eyes, "eyes", look.iris ?? "#9b5a3a", 0.004);
+      flush(x + 0.008, 3.43, -0.207, 0.006, 0.006, eyes, "eyes", "#fbf7f0", 0.003);
+      flush(side * 0.064, 3.436, -0.205, 0.018, 0.007, eyes, "eyes", "#1f1518");
+      flush(side * 0.1, 3.446, -0.206, 0.04, 0.0095, eyes, "eyes", "#1f1518");
+      flush(side * 0.142, 3.443, -0.201, 0.022, 0.009, eyes, "eyes", "#1f1518");
+      flush(side * 0.162, 3.432, -0.195, 0.012, 0.006, eyes, "eyes", "#1f1518");
+      flush(side * 0.102, 3.468, -0.204, 0.04, 0.0035, eyes, "eyes", "#a0705e", 0.003);
+      flush(side * 0.105, 3.506, -0.203, 0.042, 0.0055, head, "hair", look.hair, 0.004);
+    }
+    flush(0, 3.29, -0.199, 0.019, 0.0035, head, "skin", "#b8766c", 0.003);
+  } else if (look.face === "cute") {
+    // Larger eyes set a little lower and wider, each with a highlight; a small mouth and a touch of blush, almost
+    // flush with the face so they read as colour rather than bumps. No nose; the fringe covers the brows.
+    builder.blob(hp(0, 3.3, -0.197), sized(0.024, 0.007, 0.004), [head], "skin", "#b4605a", [8, 4]);
+    for (const side of [-1, 1]) {
+      builder.blob(hp(side * 0.148, 3.355, -0.186), sized(0.046, 0.022, 0.004), [head], "skin", "#eca596", [8, 4]);
+      builder.blob(hp(side * 0.096, 3.44, -0.203), sized(0.04, 0.056, 0.02), [eyes], "eyes", "#2b1f22", [10, 8]);
+      builder.blob(hp(side * 0.083, 3.462, -0.219), sized(0.012, 0.014, 0.008), [eyes], "eyes", "#fbf6ee", [6, 4]);
+    }
+  } else {
+    // An everyday face: small dark eyes under a lid stroke, a sliver of white, thin brows in the hair's colour and a
+    // thin mouth. The ears stay; there is no nose bump.
+    for (const side of [-1, 1]) {
+      const x = side * 0.088;
+      flush(x, 3.456, -0.202, 0.034, 0.013, eyes, "eyes", "#efe9df", 0.004);
+      flush(x, 3.454, -0.204, 0.015, 0.018, eyes, "eyes", "#231a1a", 0.004);
+      flush(x, 3.47, -0.206, 0.038, 0.007, eyes, "eyes", "#231a1a");
+      flush(side * 0.12, 3.466, -0.201, 0.012, 0.005, eyes, "eyes", "#231a1a", 0.004);
+      flush(side * 0.092, 3.53, -0.203, 0.044, 0.006, head, "hair", look.hair);
+    }
+    flush(0, 3.31, -0.2, 0.024, 0.004, head, "skin", "#9c6a5a", 0.003);
   }
   // Hair: a shell over the back and sides of the skull, with the hairline above the brow.
-  const hairRings: [y: number, rx: number, rz: number, z: number][] = look.hairStyle === "bob"
+  const hairRings: [y: number, rx: number, rz: number, z: number][] = look.hairStyle === "bob" || look.hairStyle === "long"
     ? [[3.24, 0.25, 0.26, 0.05], [3.36, 0.262, 0.272, 0.03], [3.5, 0.255, 0.27, 0.015], [3.62, 0.245, 0.262, 0.012], [3.71, 0.2, 0.22, 0.015], [3.775, 0.1, 0.12, 0.016], [3.8, 0.02, 0.02, 0.016]]
     : [[3.3, 0.21, 0.22, 0.06], [3.42, 0.245, 0.262, 0.03], [3.54, 0.248, 0.268, 0.015], [3.64, 0.226, 0.246, 0.014], [3.72, 0.17, 0.19, 0.016], [3.775, 0.08, 0.1, 0.016], [3.795, 0.02, 0.02, 0.016]];
-  const hair = hairRings.map(([y, rx, rz, z]) => ({ at: v(0, y, z), rx, rz, skin: [head] as Skin }));
-  builder.loft(hair, { segments: 20, garment: "hair", color: look.hair, capEnd: true, flatFront: 0.5 });
-  if (look.hairStyle === "bun") builder.blob(v(0, 3.66, 0.24), v(0.11, 0.1, 0.1), [head], "hair", look.hair);
+  const hairAt = ([y, rx, rz, z]: [number, number, number, number]) => ({ at: hp(0, y, z), rx: rx * s, rz: rz * s, skin: [head] as Skin });
+  if (look.fringe) {
+    // A blunt fringe: the bob covers the sides and back up to the brow line, and a closed cap over the crown comes
+    // down across the forehead to just above the eyes.
+    builder.loft(hairRings.filter(([y]) => y < 3.52).concat([[3.52, 0.255, 0.27, 0.015]]).map(hairAt), { segments: 20, garment: "hair", color: look.hair, flatFront: 0.5 });
+    const fringe: [number, number, number, number][] = [
+      [3.52, 0.255, 0.27, 0.015], [3.58, 0.25, 0.266, 0.012], [3.66, 0.232, 0.25, 0.012], [3.73, 0.18, 0.2, 0.015], [3.78, 0.1, 0.12, 0.016], [3.805, 0.02, 0.02, 0.016],
+    ];
+    builder.loft(fringe.map(hairAt), { segments: 20, garment: "hair", color: look.hair, capEnd: true });
+  } else {
+    // Without a fringe: drawn back off the face at the sides, and a closed cap over the top down to a hairline above
+    // the brow, so the crown never shows bare.
+    const bobbed = look.hairStyle === "bob" || look.hairStyle === "long";
+    const hairline: [number, number, number, number] = bobbed ? [3.6, 0.248, 0.264, 0.012] : [3.6, 0.24, 0.258, 0.014];
+    builder.loft(hairRings.filter(([y]) => y < hairline[0]).concat([hairline]).map(hairAt), { segments: 20, garment: "hair", color: look.hair, flatFront: 0.5 });
+    builder.loft([hairline as [number, number, number, number]].concat(hairRings.filter(([y]) => y > hairline[0])).map(hairAt), { segments: 20, garment: "hair", color: look.hair, capEnd: true });
+  }
+  if (look.hairStyle === "bun") builder.blob(hp(0, 3.66, 0.24), sized(0.11, 0.1, 0.1), [head], "hair", look.hair);
+  if (look.hairStyle === "long") {
+    // Long straight hair down the back to the shoulder blades, lying just off the top; its lower part follows the
+    // chest, so it stays on her back as she leans into a run.
+    const curtain: [y: number, rx: number, rz: number, z: number][] = [
+      [3.45, 0.255, 0.2, 0.09], [3.3, 0.265, 0.17, 0.14], [3.15, 0.27, 0.12, 0.2], [2.95, 0.265, 0.06, 0.27],
+      [2.75, 0.255, 0.045, 0.29], [2.6, 0.235, 0.04, 0.292], [2.5, 0.17, 0.03, 0.29], [2.46, 0.06, 0.02, 0.288],
+    ];
+    builder.loft(curtain.map(([y, rx, rz, z]) => {
+      const follow = Math.min(0.75, Math.max(0, (3.15 - y) / 0.7) * 0.75);
+      return { at: hp(0, y, z), rx: rx * s, rz: rz * s, skin: (follow > 0 ? [head, chest, follow] : [head]) as Skin };
+    }), { segments: 20, garment: "hair", color: look.hair, capEnd: true });
+    // Locks framing the face, in front of the ears, down to the jaw.
+    for (const side of [-1, 1]) {
+      const lock: [y: number, x: number, z: number, rx: number, rz: number][] = [
+        [3.52, 0.228, -0.07, 0.045, 0.055], [3.38, 0.238, -0.085, 0.05, 0.045], [3.24, 0.242, -0.09, 0.045, 0.035],
+        [3.14, 0.238, -0.085, 0.03, 0.025], [3.09, 0.232, -0.08, 0.012, 0.012],
+      ];
+      builder.loft(lock.map(([y, x, z, rx, rz]) => ({ at: hp(side * x, y, z), rx: rx * s, rz: rz * s, skin: [head] as Skin })), {
+        segments: 10, garment: "hair", color: look.hair, capStart: true, capEnd: true, facing: v(0, 0, -1),
+      });
+    }
+  }
+  if (look.ribbon) {
+    // A ribbon bow tied at the back of the head: two loops, a knot and two tails.
+    for (const side of [-1, 1]) {
+      builder.blob(hp(side * 0.11, 3.55, 0.29), sized(0.1, 0.058, 0.035), [head], "cap", look.ribbon, [10, 6]);
+      builder.blob(hp(side * 0.05, 3.43, 0.3), sized(0.03, 0.08, 0.016), [head], "cap", look.ribbon, [6, 5]);
+    }
+    builder.blob(hp(0, 3.53, 0.305), sized(0.036, 0.04, 0.035), [head], "cap", look.ribbon, [8, 5]);
+  }
+  if (look.clip) builder.blob(hp(0.17, 3.64, -0.175), sized(0.055, 0.022, 0.03), [head], "cap", look.clip, [8, 5]);
   if (look.cap) {
     // A flat cap: a soft crown pulled forward, and a short stiff peak.
     builder.loft([
-      { at: v(0, 3.6, 0.0), rx: 0.255, rz: 0.27, skin: [head] },
-      { at: v(0, 3.7, -0.025), rx: 0.268, rz: 0.292, skin: [head] },
-      { at: v(0, 3.77, -0.04), rx: 0.24, rz: 0.268, skin: [head] },
-      { at: v(0, 3.82, -0.045), rx: 0.14, rz: 0.16, skin: [head] },
-      { at: v(0, 3.835, -0.045), rx: 0.03, rz: 0.03, skin: [head] },
+      { at: hp(0, 3.6, 0.0), rx: 0.255 * s, rz: 0.27 * s, skin: [head] },
+      { at: hp(0, 3.7, -0.025), rx: 0.268 * s, rz: 0.292 * s, skin: [head] },
+      { at: hp(0, 3.77, -0.04), rx: 0.24 * s, rz: 0.268 * s, skin: [head] },
+      { at: hp(0, 3.82, -0.045), rx: 0.14 * s, rz: 0.16 * s, skin: [head] },
+      { at: hp(0, 3.835, -0.045), rx: 0.03 * s, rz: 0.03 * s, skin: [head] },
     ], { segments: 20, garment: "cap", color: look.cap, capStart: true, capEnd: true });
     builder.loft([
-      { at: v(0, 3.625, -0.2), rx: 0.2, rz: 0.035, skin: [head] },
-      { at: v(0, 3.6, -0.3), rx: 0.19, rz: 0.03, skin: [head] },
-      { at: v(0, 3.585, -0.345), rx: 0.14, rz: 0.022, skin: [head] },
+      { at: hp(0, 3.625, -0.2), rx: 0.2 * s, rz: 0.035 * s, skin: [head] },
+      { at: hp(0, 3.6, -0.3), rx: 0.19 * s, rz: 0.03 * s, skin: [head] },
+      { at: hp(0, 3.585, -0.345), rx: 0.14 * s, rz: 0.022 * s, skin: [head] },
     ], { segments: 12, garment: "cap", color: look.cap, capStart: true, capEnd: true, boxy: 0.6, facing: v(0, 1, 0) });
   }
   if (look.bag) {
     // A satchel at the left hip, slightly behind, on a strap from the right shoulder across the chest and back.
-    const centre = v(-0.43 * w, 1.98, 0.12);
+    // Over a skirt it rides a little higher and further out, clear of the flare.
+    const centre = look.legs === "skirt" ? v(-0.47 * w, 2.14, 0.12) : v(-0.43 * w, 1.98, 0.12);
     builder.loft([
       { at: centre.clone().add(v(0, -0.2, 0)), rx: 0.07, rz: 0.23, skin: [bag] },
       { at: centre.clone().add(v(0, -0.17, 0)), rx: 0.085, rz: 0.25, skin: [bag] },
@@ -432,11 +686,14 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
 }
 
 /** Rest positions of every bone, in figure space (scale 1, build w). */
-function bonePositions(w: number): Record<BoneName, THREE.Vector3> {
+function bonePositions(w: number, look: FigureLook): Record<BoneName, THREE.Vector3> {
   const sx = (x: number) => x * w;
+  const size = look.head ?? 1;
+  const drop = headDrop(size);
+  const eyeY = look.face === "anime" ? 3.42 : look.face === "cute" ? 3.44 : 3.46;
   return {
-    hips: v(0, BASE.hips, 0.02), spine: v(0, BASE.spine, 0.01), chest: v(0, BASE.chest, 0), neck: v(0, BASE.neck, 0.025), head: v(0, BASE.head, 0.02),
-    eyes: v(0, 3.46, -0.2), bag: v(-0.43 * w, 2.15, 0.1),
+    hips: v(0, BASE.hips, 0.02), spine: v(0, BASE.spine, 0.01), chest: v(0, BASE.chest, 0), neck: v(0, BASE.neck, 0.025), head: v(0, BASE.head - drop, 0.02),
+    eyes: v(0, CHIN + (eyeY - CHIN) * size - drop, -0.2 * size), bag: v(-0.43 * w, 2.15, 0.1),
     clavicleL: v(sx(-0.08), 2.92, 0.02), upperArmL: v(-sx(BASE.shoulder.x), BASE.shoulder.y, 0.02),
     foreArmL: v(-(BASE.elbow.x * w + 0.02), BASE.elbow.y, 0.04), handL: v(-(BASE.wrist.x * w + 0.03), BASE.wrist.y, 0),
     clavicleR: v(sx(0.08), 2.92, 0.02), upperArmR: v(sx(BASE.shoulder.x), BASE.shoulder.y, 0.02),
@@ -453,6 +710,31 @@ const PARENT: Record<BoneName, BoneName | null> = {
   thighL: "hips", shinL: "thighL", footL: "shinL", thighR: "hips", shinR: "thighR", footR: "shinR",
 };
 
+/**
+ * FigureLook.stature as heights: the plain map shortens the legs (ankle to hip) and trunk (hip to chin) and lifts
+ * nothing below the ankle; above the chin everything moves down unchanged. Each bone chain that keeps its shape is
+ * moved rigidly with its root: the head (and eyes), the shoes, the satchel; the arms hang from the shoulder and
+ * shorten with the trunk. A vertex blends its bones' maps by its skin weights, so the seams stay closed.
+ */
+function statureMaps(look: FigureLook, rest: Record<BoneName, THREE.Vector3>): { plain: (y: number) => number; bone: (bone: number, y: number) => number } {
+  const stature = look.stature;
+  if (!stature) return { plain: (y) => y, bone: (_bone, y) => y };
+  const ankle = BASE.ankle, hip = BASE.hipJoint.y, chin = CHIN - headDrop(look.head ?? 1);
+  const atHip = ankle + (hip - ankle) * stature.legs;
+  const atChin = atHip + (chin - hip) * stature.trunk;
+  const plain = (y: number) =>
+    y <= ankle ? y : y <= hip ? ankle + (y - ankle) * stature.legs : y <= chin ? atHip + (y - hip) * stature.trunk : atChin + (y - chin);
+  const rigid = (anchor: number, factor: number) => (y: number) => plain(anchor) + (y - anchor) * factor;
+  const head = rigid(rest.head.y, 1), feet = rigid(ankle, 1), bag = rigid(rest.bag.y, 1);
+  const armL = rigid(rest.upperArmL.y, stature.trunk), armR = rigid(rest.upperArmR.y, stature.trunk);
+  const chains: Partial<Record<BoneName, (y: number) => number>> = {
+    head, eyes: head, footL: feet, footR: feet, bag,
+    upperArmL: armL, foreArmL: armL, handL: armL, upperArmR: armR, foreArmR: armR, handR: armR,
+  };
+  const byBone = BONE_NAMES.map((name) => chains[name] ?? plain);
+  return { plain, bone: (bone, y) => byBone[bone]!(y) };
+}
+
 /** Build one person in `look`, drawn with `material` (see createFigureMaterial, shared by every figure). */
 export function createFigure(look: FigureLook, material: THREE.Material): Figure {
   const scale = look.scale ?? 1;
@@ -463,9 +745,28 @@ export function createFigure(look: FigureLook, material: THREE.Material): Figure
   addArm(builder, look, -1, w);
   addArm(builder, look, 1, w);
   addBody(builder, look, w);
-  const geometry = builder.build();
 
-  const rest = bonePositions(w);
+  const rest = bonePositions(w, look);
+  const stature = statureMaps(look, rest);
+  let leg = BASE_LEG;
+  if (look.stature) {
+    const { positions, skinIndex, skinWeight } = builder;
+    for (let i = 0; i < positions.length / 3; i += 1) {
+      const y = positions[i * 3 + 1]!;
+      let moved = 0;
+      for (let k = 0; k < 4; k += 1) {
+        const weight = skinWeight[i * 4 + k]!;
+        if (weight > 0) moved += weight * stature.bone(skinIndex[i * 4 + k]!, y);
+      }
+      positions[i * 3 + 1] = moved;
+    }
+    for (const name of BONE_NAMES) rest[name].y = stature.bone(BONE[name], rest[name].y);
+    const hip = stature.plain(BASE.hipJoint.y), knee = stature.plain(BASE.knee);
+    leg = { hip, thigh: hip - knee, shin: knee - BASE.ankle, ankle: BASE.ankle, sole: BASE_LEG.sole };
+  }
+  const geometry = builder.build();
+  const height = stature.plain(BASE.height) * scale;
+
   const bones = new Map<BoneName, THREE.Bone>();
   for (const name of BONE_NAMES) {
     const bone = new THREE.Bone();
@@ -502,9 +803,10 @@ export function createFigure(look: FigureLook, material: THREE.Material): Figure
     [pick(`${name}L` as BoneName), pick(`${name}R` as BoneName)];
   return {
     group, mesh, scale,
-    height: BASE.height * scale,
+    height,
+    pace: height / BASE.height,
     hipsRest: root.position.clone(),
-    leg: BASE_LEG,
+    leg,
     bones: {
       hips: pick("hips"), spine: pick("spine"), chest: pick("chest"), neck: pick("neck"), head: pick("head"), eyes: pick("eyes"), bag: pick("bag"),
       clavicle: pair("clavicle"), upperArm: pair("upperArm"), foreArm: pair("foreArm"), hand: pair("hand"),

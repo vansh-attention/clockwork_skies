@@ -402,13 +402,14 @@ const fragmentShader = /* glsl */ `
       return vec4((1.0 - smoothstep(0.045 - w, 0.045 + w, d)) * cut(valueNoise(p * 0.5), 0.45), 0.0, 0.0, 0.0);
     }
     if (pattern == 10) {
-      // Painted stucco worn back to the brick behind it in a few ragged patches, each with its own courses.
-      // Smaller chips high up, more wear toward the foot of the wall where it is knocked and damp.
-      float worn = valueNoise(p * 0.5 + vec3(3.1, 0.0, 7.7)) * 0.7 + valueNoise(p * 1.7) * 0.3;
+      // Painted stucco weathered in a few patches of damp and grime: flat tone shifts of the render itself, as the
+      // reference's walls carry their stains (no brick showing through). Streaks taller than they are wide, as water
+      // runs down a wall, with ragged edges; more toward the foot of the wall, where it is knocked and wet.
+      vec3 streak = vec3(p.x, p.y * 0.35, p.z);
+      float worn = valueNoise(streak * 0.6 + vec3(3.1, 0.0, 7.7)) * 0.72 + valueNoise(p * 2.4) * 0.28;
       worn += (1.0 - smoothstep(0.5, 4.0, p.y)) * 0.08;
       float area = cut(worn, 0.76);
-      float line = courses(uv, vec2(1.1, 0.5), 0.05, tone);
-      return vec4(area * (0.82 + line * 0.18), line * area * 0.6, tone * area, area);
+      return vec4(area, 0.0, 0.0, area);
     }
     if (pattern == 12) {
       // Tarmac: darker patched repairs in rough rectangles here and there, and a few long thin cracks.
@@ -522,7 +523,9 @@ const fragmentShader = /* glsl */ `
       float area = 0.0;
       if (uPattern > 0 && uPatternStrength > 0.0) {
         float cell = patternCell(uPattern);
-        float fade = 1.0 - smoothstep(cell * 0.08, cell * 0.28, footprint);
+        // Marks are drawn in full while a unit spans 25 px or more and are gone once it is down to about 7: beyond the
+        // near street, walls and roofs read as flat colour (as the reference's do) rather than as fine hatching.
+        float fade = 1.0 - smoothstep(cell * 0.04, cell * 0.14, footprint);
         // Always evaluated (the branch above depends on uniforms only): the marks take screen-space derivatives,
         // which are undefined inside a branch that differs between neighbouring pixels. Far away, fade is 0.
         vec4 marks = paintedMarks(uPattern, vWorldPosition, worldNormal, lit);

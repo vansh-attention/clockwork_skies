@@ -47,8 +47,9 @@ describe("smooth walking response", () => {
     const stoppingDistance = atRelease - walker.z;
     expect(stoppingDistance).toBeGreaterThan(3.79 * 0.2);
     expect(stoppingDistance).toBeLessThan(3.79 * 0.45);
-    expect(WALK.runSpeed / WALK.walkSpeed).toBeGreaterThan(1.25);
-    expect(WALK.runSpeed / WALK.walkSpeed).toBeLessThan(1.4);
+    // The reference sprints at 1.42 times its jog (2.99 and 2.11 of its heights a second).
+    expect(WALK.runSpeed / WALK.walkSpeed).toBeGreaterThan(1.3);
+    expect(WALK.runSpeed / WALK.walkSpeed).toBeLessThan(1.45);
   });
 
   it("never jerks: speed changes smoothly from frame to frame through a start and a stop", () => {

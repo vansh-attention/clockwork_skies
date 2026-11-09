@@ -2,8 +2,10 @@ import * as THREE from "three";
 
 /**
  * The painted sky and the air in it.
- * - `dome`: a sphere that follows the camera and is drawn at the far plane. A horizon-to-zenith gradient (hazier
- *   below the horizon, where the islands hang over the void) with flat two-tone clouds that drift. It writes both
+ * - `dome`: a sphere that follows the camera and is drawn at the far plane. One flat sky colour above the horizon (paler
+ *   haze below it, where the islands hang over the void) with hard-edged clouds of one tone that drift, lighter
+ *   toward the horizon: the reference's sky technique (a flat base colour, clouds by a hard step of a noise, their
+ *   colour graded down the view; read from its shipped bundle, App3D-DwM1eiaC.js, class sky). It writes both
  *   illustration buffers (surface id 1, like the clear colour, and no line mask), so silhouettes against it still
  *   get their outline from the side of the thing in front.
  * - `overlay`: a few hundred dust specks drifting in a box around the camera, drawn after the line pass so they
@@ -14,10 +16,10 @@ import * as THREE from "three";
  * 0.48; its lighter cloud about hue 167°, saturation 0.32, measured on its frames).
  */
 export const SKY_COLORS = {
-  zenith: "#4fb2ad",
+  zenith: "#62bbb7",
   horizon: "#9edbcd",
   below: "#8ec4c1",
-  cloudLight: "#b4e9db",
+  cloudLight: "#9ee3d4",
   cloudShade: "#93d8ca",
   speck: "#f7f3e2",
 } as const;
@@ -37,7 +39,6 @@ const domeFragment = /* glsl */ `
   layout(location = 0) out vec4 outColor;
   layout(location = 1) out vec4 outInfo;
   uniform vec3 uZenith;
-  uniform vec3 uHorizon;
   uniform vec3 uBelow;
   uniform vec3 uCloudLight;
   uniform vec3 uCloudShade;
@@ -71,20 +72,20 @@ const domeFragment = /* glsl */ `
   void main() {
     vec3 d = normalize(vDirection);
     float up = d.y;
-    vec3 sky = mix(uHorizon, uZenith, smoothstep(0.0, 0.6, up));
-    sky = mix(sky, uBelow, smoothstep(0.0, -0.4, up));
+    // One flat colour above the horizon, as the reference paints its sky; the paler void below it.
+    vec3 sky = mix(uZenith, uBelow, smoothstep(0.0, -0.4, up));
 
     // Clouds on a flat ceiling: long, brushy streaks drawn out along the wind (the noise is stretched one way and
-    // warped), denser toward the horizon, two tones with hard (anti-aliased) edges. Computed for every sky pixel (no
-    // branch) so fwidth stays well defined; below the horizon they are masked away.
+    // warped), denser toward the horizon, with hard (anti-aliased) edges. Computed for every sky pixel (no branch) so
+    // fwidth stays well defined; below the horizon they are masked away.
     vec2 p = d.xz / (max(up, 0.0) + 0.2) * 1.4 * vec2(0.42, 1.25) + vec2(uTime * 0.012, uTime * 0.005);
     p += 0.45 * vec2(noise(p * 1.6 + 3.7), noise(p * 1.6 - 1.9));
     float cover = fbm(p) - 0.56 + (1.0 - smoothstep(0.05, 0.5, up)) * 0.08;
     float edge = fwidth(cover) * 1.2 + 1e-4;
     float cloud = smoothstep(-edge, edge, cover);
-    float inner = cover - 0.05 - (noise(p * 3.1 + vec2(0.4, 0.2)) - 0.5) * 0.08;
-    float lit = smoothstep(-edge, edge, inner);
-    sky = mix(sky, mix(uCloudShade, uCloudLight, lit), cloud * smoothstep(0.0, 0.08, up));
+    // One cloud tone at a time, lighter toward the horizon, as the reference's clouds lighten down the view.
+    vec3 cloudColor = mix(uCloudLight, uCloudShade, smoothstep(0.05, 0.6, up));
+    sky = mix(sky, cloudColor, cloud * smoothstep(0.0, 0.08, up));
     outColor = vec4(sky, 1.0);
     outInfo = vec4(0.0, 0.5, 0.5, 0.0);
   }
@@ -138,7 +139,6 @@ export class Sky {
       glslVersion: THREE.GLSL3,
       uniforms: {
         uZenith: { value: new THREE.Color(SKY_COLORS.zenith) },
-        uHorizon: { value: new THREE.Color(SKY_COLORS.horizon) },
         uBelow: { value: new THREE.Color(SKY_COLORS.below) },
         uCloudLight: { value: new THREE.Color(SKY_COLORS.cloudLight) },
         uCloudShade: { value: new THREE.Color(SKY_COLORS.cloudShade) },

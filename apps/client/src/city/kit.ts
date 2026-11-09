@@ -19,29 +19,41 @@ export type Swatch = Readonly<Omit<IllustratedMaterialOptions, "surfaceId">>;
 // surface shades the same way and shade stays coloured. Most surfaces carry painted marks (see @clockwork/render
 // patterns) that fade out with distance, so far views read as calm masses and street level shows the courses. Worn
 // stucco, light grass and plane bark ink their own painted patches, as an illustrator outlines a chipped wall.
+/** The town's default painted value patches (see Palette.get); the illustrated material's own default is 0.035. */
+const TOWN_GRAIN = 0.015;
+
 const SWATCHES = {
-  road: { color: "#7c9991", outline: 0.4, grain: 0.03, pattern: "tarmac", patternStrength: 0.8 },
+  road: { color: "#7c9991", outline: 0.4, grain: 0.015, pattern: "tarmac", patternStrength: 0.8 },
   // Road paint carries no ink: lines and letters on a street are paint, not objects.
-  paint: { color: "#e6e2d4", outline: 0, grain: 0 },
+  paint: { color: "#e2e6dc", outline: 0, grain: 0 },
   paintYellow: { color: "#d5b247", outline: 0, grain: 0 },
   sea: { color: "#62aaa6", outline: 0.1, grain: 0.015, pattern: "water", patternColor: "#b2d9cd", patternStrength: 0.24 },
   ground: { color: "#6d9d61", grain: 0.025, pattern: "grass", patternColor: "#98bf7c" },
   terrace: { color: "#8db57a", pattern: "grass", patternColor: "#b2cf8c" },
-  paving: { color: "#bcc4b6", outline: 0.6, grain: 0.03, pattern: "flags", patternColor: "#98a093", patternStrength: 0.55 },
-  stone: { color: "#d8d1bc", pattern: "ashlar", patternColor: "#b0a893" },
+  paving: { color: "#c7d2c0", outline: 0.6, grain: 0.015, pattern: "flags", patternColor: "#98a093", patternStrength: 0.55 },
+  stone: { color: "#cdd4c4", outline: 0.6, pattern: "ashlar", patternColor: "#acad9e" },
   rock: { color: "#a3a594", grain: 0.04, pattern: "hatch", patternColor: "#3f4843" },
   strata: { color: "#8f7c60", pattern: "hatch", patternColor: "#3b3128" },
   water: { color: "#4f8884", outline: 0.35, pattern: "water", patternColor: "#cfe4da" },
   skin: { color: "#dfb59b", grain: 0.012, outline: 0.65 },
   coat: { color: "#8c4353", grain: 0.025, outline: 0.8 },
   leather: { color: "#8f5a3e", grain: 0.025 },
-  wall0: { color: "#dfdacb", pattern: "render", patternColor: "#b8795c", patternStrength: 0.95, inkPatches: true },
+  /** White stucco with weathered patches a few tones darker (damp and grime), inked as the reference inks its stains. */
+  wall0: { color: "#d5ded1", pattern: "render", patternColor: "#b9c2b5", patternStrength: 0.95, inkPatches: true },
   wall1: { color: "#c9b080", pattern: "brick", patternColor: "#ddd2b6", patternStrength: 0.5 },
-  wall2: { color: "#b6684e", pattern: "brick", patternColor: "#cfbba0", patternStrength: 0.48 },
+  wall2: { color: "#ad6f5a", pattern: "brick", patternColor: "#cfbba0", patternStrength: 0.48 },
   roof0: { color: "#5f6c78", pattern: "slate", patternColor: "#2c343b" },
   roof1: { color: "#4c5660", pattern: "slate", patternColor: "#22292e" },
   roof2: { color: "#b4623f", pattern: "slate", patternColor: "#7a3b27" },
-  ink: { color: "#2b3337" },
+  // Black-painted iron (railings, lamps, downpipes, cab bodies), as a dark charcoal slate rather than ink-black: the
+  // reference keeps its metal well above its darkest lines.
+  ink: { color: "#3a434c" },
+  // Window glass: a dark slate that still catches the sky, as the reference's panes do (about 50–70 of 255), so
+  // terraces of sash windows read as glass rather than holes of ink.
+  glass: { color: "#53676f", outline: 0.25 },
+  // Street metal (lamp posts, railings, bins, bollards, posts) in the reference's own pole tone, a mid-dark green grey
+  // (its poles read about (80–90, 95–106, 88–99)), rather than near-black.
+  iron: { color: "#55645c" },
   trunk: { color: "#7d765c", pattern: "camo", patternColor: "#d0c8a3", patternStrength: 0.85, inkPatches: true },
   // Solid foliage: a sight-line cutout also erased intersecting hedges/props that share these materials.
   // The camera avoids scenery through its collision world rather than deleting visible fragments.
@@ -52,9 +64,14 @@ const SWATCHES = {
   tuft: { color: "#80ad6c", outline: 0, grain: 0 },
   brass: { color: "#dcae4a" },
   copper: { color: "#c43e2f" },
-  face: { color: "#f4eedd", outline: 0.6 },
+  face: { color: "#e7efe2", outline: 0.4 },
   cloud: { color: "#eef0e8", grain: 0.05 },
   smoke: { color: "#dcdfd4", grain: 0.05 },
+  /**
+   * Dust kicked up by feet: one flat mid grey, as the reference's own footstep particles (#7c7c7c, drawn unlit), not a
+   * white cloud; the same colour in shade, so a puff never shows two tones.
+   */
+  dust: { color: "#747a72", shadow: "#747a72", grain: 0 },
   fieldA: { color: "#a9b56f" },
   fieldB: { color: "#d3b264" },
 } as const satisfies Record<string, Swatch>;
@@ -94,8 +111,10 @@ export class Palette<Extra extends string = never> {
     const swatch = this.swatchFor(key);
     const surfaceId = 0.05 + this.created * 0.027;
     if (surfaceId >= 1) throw new RangeError(`Palette is out of surface ids (${this.created} in use) at "${key}"; reuse an existing swatch`);
-    // The town is lit by a sun fixed in the world, with cast shadows and fog (see CityScene and city/sun.ts).
-    const material = createIllustratedMaterial({ ...swatch, surfaceId, lighting: "world" });
+    // The town is lit by a sun fixed in the world, with cast shadows and fog (see CityScene and city/sun.ts). Its
+    // painted value patches are gentle (TOWN_GRAIN unless a swatch says otherwise), so surfaces read as the
+    // reference's flat fills rather than mottled ones.
+    const material = createIllustratedMaterial({ grain: TOWN_GRAIN, ...swatch, surfaceId, lighting: "world" });
     this.created += 1;
     this.materials.set(key, material);
     return material;
@@ -271,7 +290,7 @@ export const CHIMNEY_POT_HEIGHT = 0.9;
 /**
  * A London terraced house: brick or white stucco walls (brick houses get a stucco ground floor), a stone cornice,
  * white-framed sash windows with glazing bars and stone sills, a black door in a white case with a fanlight, a stone
- * step, black area railings in front (gap at the door), a slate or tile roof, and a brick chimney stack with two pots.
+ * step, iron area railings in front (gap at the door), a slate or tile roof, and a brick chimney stack with two pots.
  * Local frame: +Z faces out from the tower (the street front), +X runs along the street.
  */
 export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>): void {
@@ -289,8 +308,11 @@ export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>):
   // Brick houses wear a white stucco ground floor, as so many London terraces do.
   if (house.wall !== 0) batch.add("wall0", new THREE.BoxGeometry(width + 0.08, 4.4, 0.3), local(base, 0, 2.2, depth / 2 + 0.08));
 
-  // The front door: black, in a white case with pilasters and a fanlight, up a stone step.
-  batch.add("ink", new THREE.BoxGeometry(2.2, 3.6, 0.4), local(base, 0, 1.8, front));
+  // The front door, painted as London's are (black for some, oxblood, slate blue or brown for others; swatches the
+  // town already draws with), in a white case with pilasters and a fanlight, up a stone step.
+  const DOORS: readonly SwatchKey[] = ["ink", "ink", "coat", "glass", "leather"];
+  const door = DOORS[Math.floor(seededSequence(Math.round((house.x ?? house.r) * 13.1 + (house.z ?? house.theta * 100) * 7.7) ^ 0xd0)() * DOORS.length)]!;
+  batch.add(door, new THREE.BoxGeometry(2.2, 3.6, 0.4), local(base, 0, 1.8, front));
   batch.add("face", new THREE.BoxGeometry(2.2, 0.7, 0.3), local(base, 0, 3.95, front + 0.05));
   for (const x of [-1.35, 1.35]) batch.add("face", new THREE.BoxGeometry(0.42, 4.5, 0.45), local(base, x, 2.25, front + 0.06));
   batch.add("face", new THREE.BoxGeometry(3.3, 0.35, 0.55), local(base, 0, 4.45, front + 0.06));
@@ -306,7 +328,7 @@ export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>):
   // a blind drawn part way down or a curtain at one side, so the windows read as lived-in rooms, not holes.
   const sash = (x: number, y: number, facade = base, paneZ = front) => {
     batch.add("face", new THREE.BoxGeometry(2.3, 2.9, 0.3), local(facade, x, y, paneZ - 0.02));
-    batch.add("ink", new THREE.BoxGeometry(1.8, 2.4, 0.4), local(facade, x, y, paneZ + 0.02));
+    batch.add("glass", new THREE.BoxGeometry(1.8, 2.4, 0.4), local(facade, x, y, paneZ + 0.02));
     const room = random();
     if (room < 0.55) {
       const drop = 0.5 + random() * 1.3;
@@ -338,10 +360,10 @@ export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>):
     // A stone string course marks each floor on brick fronts.
     if (house.wall !== 0) batch.add("stone", new THREE.BoxGeometry(width + 0.1, 0.24, 0.14), local(base, 0, floor * 6 + 0.2, depth / 2 + 0.07));
   }
-  // A cast-iron downpipe from the eaves to the pavement at one end of the front.
+  // A downpipe from the eaves to the pavement at one end of the front, painted a slate grey as so many are.
   const pipeX = (random() < 0.5 ? -1 : 1) * (width / 2 - 0.35);
-  batch.add("ink", new THREE.CylinderGeometry(0.11, 0.11, height - 0.6, 6), local(base, pipeX, (height - 0.6) / 2, depth / 2 + 0.13));
-  batch.add("ink", new THREE.BoxGeometry(0.42, 0.4, 0.34), local(base, pipeX, height - 0.75, depth / 2 + 0.16));
+  batch.add("glass", new THREE.CylinderGeometry(0.11, 0.11, height - 0.6, 6), local(base, pipeX, (height - 0.6) / 2, depth / 2 + 0.13));
+  batch.add("glass", new THREE.BoxGeometry(0.42, 0.4, 0.34), local(base, pipeX, height - 0.75, depth / 2 + 0.16));
 
   // The courier sees backs and ends as often as fronts: no blank stage-set walls when
   // descending from Westminster or turning into a side lane.
@@ -359,15 +381,15 @@ export function addHouse(batch: Pick<Batch, "add">, house: Readonly<HouseSpec>):
     batch.add(lid, new THREE.BoxGeometry(0.98, 0.1, 0.86), local(base, binX, 1.5, depth / 2 + 0.62));
   }
 
-  // Black area railings just in front of the house, with a gap for the door.
+  // Iron area railings just in front of the house, with a gap for the door.
   const railZ = depth / 2 + 1.05;
   for (let x = -width / 2 + 0.3; x <= width / 2 - 0.3; x += 1.15) {
     if (Math.abs(x) < 1.9) continue;
-    batch.add("ink", new THREE.BoxGeometry(0.13, 1.3, 0.13), local(base, x, 0.65, railZ));
+    batch.add("iron", new THREE.BoxGeometry(0.13, 1.3, 0.13), local(base, x, 0.65, railZ));
   }
   for (const sign of [-1, 1]) {
     const length = width / 2 - 1.9;
-    batch.add("ink", new THREE.BoxGeometry(length, 0.12, 0.12), local(base, sign * (1.9 + length / 2), 1.25, railZ));
+    batch.add("iron", new THREE.BoxGeometry(length, 0.12, 0.12), local(base, sign * (1.9 + length / 2), 1.25, railZ));
   }
 
   // A brick chimney stack (contrasting brick on brick houses) with two clay pots.

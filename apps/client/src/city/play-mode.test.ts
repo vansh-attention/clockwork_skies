@@ -53,7 +53,7 @@ function setup(mode: CityMode = "explore", reducedMotion = true) {
   const scene = Object.assign(Object.create(CityScene.prototype), {
     // The controller is given the canvas for flight input; a plain event target stands in for it.
     renderer: { domElement: new EventTarget() },
-    world, camera, controls, city, layout: createHillTownLayout(), residents: { agents: [], update: () => {}, dispose: () => {} }, mode, focused: null, flight: null, reducedMotion,
+    world, camera, controls, city, layout: createHillTownLayout(), residents: { agents: [], update: () => {}, blocks: () => false, dispose: () => {} }, mode, focused: null, flight: null, reducedMotion,
     container: { clientWidth: 1280, clientHeight: 720 },
     size: { width: 1280, height: 720 },
     shift: { x: 0.1, y: 0.1 }, shiftTarget: { x: 0.1, y: 0.1 },

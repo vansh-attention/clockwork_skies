@@ -14,6 +14,8 @@ const BEARING = 70 * Math.PI / 180;
 const ALLOWED_KEYS = new Set<string>([
   "ground", "terrace", "paving", "stone", "rock", "strata", "wall0", "wall1", "wall2", "roof0", "roof1", "roof2",
   "ink", "trunk", "leaf0", "leaf1", "leaf2", "brass", "copper", "face",
+  // Window glass, painted doors and iron railings and lamps, from the shared house and furniture kit.
+  "glass", "coat", "leather", "iron",
 ]);
 
 /** A real palette that remembers which keys were requested. */

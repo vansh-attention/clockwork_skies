@@ -24,9 +24,115 @@ function flatPolygon(points: readonly PlanPoint[], y: number): THREE.BufferGeome
   return new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2).translate(0, y, 0);
 }
 
+/** The outline of a strip `width` wide along a winding street, clipped to the island's rim. */
+function ribbonOutline(points: readonly PlanPoint[], width: number, radius: number): PlanPoint[] {
+  return clipToRim([...offsetLine(points, width / 2), ...offsetLine(points, -width / 2).reverse()], radius);
+}
+
 /** One continuous strip, avoiding gaps between the segments of a winding street. */
 export function streetRibbon(points: readonly PlanPoint[], width: number, y: number, radius = 190): THREE.BufferGeometry {
-  return flatPolygon(clipToRim([...offsetLine(points, width / 2), ...offsetLine(points, -width / 2).reverse()], radius), y);
+  return flatPolygon(ribbonOutline(points, width, radius), y);
+}
+
+/** Heights of the drawn walking surfaces (their top faces). Everything people stand on is one of these. */
+export const LONDON_SURFACE = {
+  ground: 0, paving: 0.05, apron: 0.055, square: 0.065, road: ROAD_LIFT,
+  /** Kerb stones stand 0.12 tall, centred on the road's height. */
+  kerb: ROAD_LIFT + 0.06,
+} as const;
+const KERB_SIZE = { width: 0.24, height: 0.12, spacing: 1.5 } as const;
+
+type KerbStone = { x: number; z: number; length: number; angle: number };
+/** Every kerb stone along every street: shared by the drawing and the ground heights, so they always agree. */
+function kerbStones(plan: LondonPlan): KerbStone[] {
+  const stones: KerbStone[] = [];
+  for (const street of plan.streets) {
+    for (const side of [-1, 1]) {
+      const kerb = offsetLine(street.points, side * (street.width / 2 + KERB_SIZE.width / 2));
+      for (let i = 1; i < kerb.length; i += 1) {
+        const a = kerb[i - 1]!; const b = kerb[i]!;
+        const length = Math.hypot(b.x - a.x, b.z - a.z);
+        const count = Math.ceil(length / KERB_SIZE.spacing);
+        for (let j = 0; j < count; j += 1) {
+          const t = (j + 0.5) / count;
+          const point = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
+          // Kerbs stop at joining carriageways instead of drawing white lines across the junction.
+          if (plan.streets.some((other) => other !== street && nearestOnPolyline(point, other.points).distance < other.width / 2 + 0.4)) continue;
+          stones.push({ x: point.x, z: point.z, length: length / count + 0.02, angle: Math.atan2(-(b.z - a.z), b.x - a.x) });
+        }
+      }
+    }
+  }
+  return stones;
+}
+
+/** Even-odd point-in-polygon. */
+function inside(polygon: readonly PlanPoint[], x: number, z: number): boolean {
+  let hit = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const a = polygon[i]!; const b = polygon[j]!;
+    if ((a.z > z) !== (b.z > z) && x < ((b.x - a.x) * (z - a.z)) / (b.z - a.z) + a.x) hit = !hit;
+  }
+  return hit;
+}
+
+/** Whether (x, z) lies on a flat rectangle drawn with `at(x, y, z, rotation)` (width along local X, depth along Z). */
+function onRect(rect: { x: number; z: number; width: number; depth: number; rotation: number }, x: number, z: number): boolean {
+  const dx = x - rect.x, dz = z - rect.z;
+  const c = Math.cos(rect.rotation), s = Math.sin(rect.rotation);
+  return Math.abs(dx * c - dz * s) <= rect.width / 2 && Math.abs(dx * s + dz * c) <= rect.depth / 2;
+}
+
+/**
+ * The height of the drawn London ground at (x, z): the top of the highest walking surface drawn there (road, kerb
+ * stone, square, front apron, paving or plain ground), from the very outlines buildLondonStreetNetwork draws. People
+ * stand on this, so no foot sinks into a road or a kerb. Bridges and the river are the walk world's own business.
+ */
+export function createLondonGroundHeight(plan: LondonPlan): (x: number, z: number) => number {
+  type Area = { polygon: PlanPoint[]; height: number; minX: number; maxX: number; minZ: number; maxZ: number };
+  const areas: Area[] = [];
+  const addArea = (polygon: PlanPoint[], height: number) => {
+    if (polygon.length < 3) return;
+    const xs = polygon.map((p) => p.x), zs = polygon.map((p) => p.z);
+    areas.push({ polygon, height, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) });
+  };
+  for (const street of plan.streets) {
+    addArea(ribbonOutline(street.points, street.width + (street.pavement + FRONT_AREA) * 2, plan.radius), LONDON_SURFACE.paving);
+    addArea(ribbonOutline(street.points, street.width, plan.radius), LONDON_SURFACE.road);
+  }
+  const rects: { rect: { x: number; z: number; width: number; depth: number; rotation: number }; height: number }[] = [];
+  for (const square of plan.squares) rects.push({ rect: square, height: LONDON_SURFACE.square });
+  for (const house of plan.houses) {
+    const apron = frontageApron(house, plan);
+    if (apron) rects.push({ rect: apron, height: LONDON_SURFACE.apron });
+  }
+  // Kerb stones, bucketed by a coarse grid: there are hundreds of them.
+  const cell = 8;
+  const kerbs = new Map<string, KerbStone[]>();
+  for (const stone of kerbStones(plan)) {
+    const reach = stone.length / 2 + KERB_SIZE.width;
+    for (let gx = Math.floor((stone.x - reach) / cell); gx <= Math.floor((stone.x + reach) / cell); gx += 1) {
+      for (let gz = Math.floor((stone.z - reach) / cell); gz <= Math.floor((stone.z + reach) / cell); gz += 1) {
+        const key = `${gx},${gz}`;
+        const bucket = kerbs.get(key);
+        if (bucket) bucket.push(stone); else kerbs.set(key, [stone]);
+      }
+    }
+  }
+  return (x: number, z: number) => {
+    let height: number = LONDON_SURFACE.ground;
+    for (const area of areas) {
+      if (area.height <= height || x < area.minX || x > area.maxX || z < area.minZ || z > area.maxZ) continue;
+      if (inside(area.polygon, x, z)) height = area.height;
+    }
+    for (const { rect, height: top } of rects) if (top > height && onRect(rect, x, z)) height = top;
+    for (const stone of kerbs.get(`${Math.floor(x / cell)},${Math.floor(z / cell)}`) ?? []) {
+      if (onRect({ x: stone.x, z: stone.z, width: stone.length, depth: KERB_SIZE.width, rotation: stone.angle }, x, z)) {
+        height = Math.max(height, LONDON_SURFACE.kerb);
+      }
+    }
+    return height;
+  };
 }
 
 /** Clip land polygons to the island's convex rim. The Thames genuinely cuts the ground into two banks. */
@@ -154,31 +260,19 @@ function paintStreet(batch: Batch, street: PlanStreet, plan: LondonPlan): void {
 export function buildLondonStreetNetwork(batch: Batch, plan: LondonPlan) {
   for (const street of plan.streets) {
     // Paved from house front to house front: pavements and the front areas behind them (no lawns along a street).
-    batch.add("paving", streetRibbon(street.points, street.width + (street.pavement + FRONT_AREA) * 2, 0.05, plan.radius));
-    batch.add("road", streetRibbon(street.points, street.width, ROAD_LIFT, plan.radius));
-    for (const side of [-1, 1]) {
-      const kerb = offsetLine(street.points, side * (street.width / 2 + 0.12));
-      for (let i = 1; i < kerb.length; i += 1) {
-        const a = kerb[i - 1]!; const b = kerb[i]!;
-        const length = Math.hypot(b.x - a.x, b.z - a.z);
-        const count = Math.ceil(length / 1.5);
-        for (let j = 0; j < count; j += 1) {
-          const t = (j + 0.5) / count;
-          const point = { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t };
-          // Kerbs stop at joining carriageways instead of drawing white lines across the junction.
-          if (plan.streets.some((other) => other !== street && nearestOnPolyline(point, other.points).distance < other.width / 2 + 0.4)) continue;
-          batch.add("stone", new THREE.BoxGeometry(length / count + 0.02, 0.12, 0.24), at(point.x, ROAD_LIFT, point.z, Math.atan2(-(b.z - a.z), b.x - a.x)));
-        }
-      }
-    }
+    batch.add("paving", streetRibbon(street.points, street.width + (street.pavement + FRONT_AREA) * 2, LONDON_SURFACE.paving, plan.radius));
+    batch.add("road", streetRibbon(street.points, street.width, LONDON_SURFACE.road, plan.radius));
     paintStreet(batch, street, plan);
   }
+  for (const stone of kerbStones(plan)) {
+    batch.add("stone", new THREE.BoxGeometry(stone.length, KERB_SIZE.height, KERB_SIZE.width), at(stone.x, ROAD_LIFT, stone.z, stone.angle));
+  }
   for (const square of plan.squares) {
-    batch.add("paving", new THREE.PlaneGeometry(square.width, square.depth).rotateX(-Math.PI / 2), at(square.x, 0.065, square.z, square.rotation));
+    batch.add("paving", new THREE.PlaneGeometry(square.width, square.depth).rotateX(-Math.PI / 2), at(square.x, LONDON_SURFACE.square, square.z, square.rotation));
   }
   for (const house of plan.houses) {
     const apron = frontageApron(house, plan);
-    if (apron) batch.add("paving", new THREE.PlaneGeometry(apron.width, apron.depth).rotateX(-Math.PI / 2), at(apron.x, 0.055, apron.z, apron.rotation));
+    if (apron) batch.add("paving", new THREE.PlaneGeometry(apron.width, apron.depth).rotateX(-Math.PI / 2), at(apron.x, LONDON_SURFACE.apron, apron.z, apron.rotation));
   }
   for (const bridge of plan.bridges) {
     const base = at(bridge.x, 0, bridge.z, bridge.rotation);

@@ -114,24 +114,31 @@ describe("createCameraWorld", () => {
       const rotation = (cab.rotation ?? Math.PI - cab.bearing) + (cab.turn ?? 0);
       for (const sign of [-1, 1]) {
         const side = { x: sign * Math.sin(rotation), z: sign * Math.cos(rotation) };
-        const stand = size.halfZ + WALK.radius + 0.1;
-        const x = cab.x + side.x * stand, z = cab.z + side.z * stand;
-        if (!walk.surfaceAt(x, z).walkable || walk.blocked(x, z, WALK.radius)) continue;
-        const y = walk.surfaceAt(x, z).height;
-        // The real follow camera, the courier facing away from the cab so the camera stands across it.
-        const camera = new THREE.PerspectiveCamera(FOLLOW.fov, 16 / 9, FOLLOW.near, 5000);
-        const follow = new FollowCamera(camera);
-        follow.setWorld(world, { x: 0, y: 0, z: 0 });
-        const subject = { x, y, z, heading: Math.atan2(side.x, -side.z), vx: 0, vz: 0 };
-        follow.snapBehind(subject);
-        for (let i = 0; i < 90; i += 1) follow.update(1 / 60, subject, false);
-        // Not pulled in onto the courier's back: the camera keeps (nearly) its full distance from the eyes.
-        const eyes = new THREE.Vector3(x, y + FOLLOW.sightLift, z);
-        expect(camera.position.distanceTo(eyes), `cab at ${cab.x.toFixed(1)},${cab.z.toFixed(1)}`).toBeGreaterThan(FOLLOW.distance * 0.85);
-        checked += 1;
+        // Pressed against the cab's side, and a step further out.
+        for (const [gap, chestVisible] of [[0.1, false], [1, true]] as const) {
+          const stand = size.halfZ + WALK.radius + gap;
+          const x = cab.x + side.x * stand, z = cab.z + side.z * stand;
+          if (!walk.surfaceAt(x, z).walkable || walk.blocked(x, z, WALK.radius)) continue;
+          const y = walk.surfaceAt(x, z).height;
+          // The real follow camera, the courier facing away from the cab so the camera stands across it.
+          const camera = new THREE.PerspectiveCamera(FOLLOW.fov, 16 / 9, FOLLOW.near, 5000);
+          const follow = new FollowCamera(camera);
+          follow.setWorld(world, { x: 0, y: 0, z: 0 });
+          const subject = { x, y, z, heading: Math.atan2(side.x, -side.z), vx: 0, vz: 0 };
+          follow.snapBehind(subject);
+          for (let i = 0; i < 90; i += 1) follow.update(1 / 60, subject, false);
+          // Not pulled in onto the courier's back: the camera keeps (nearly) its full distance from the eyes and sees
+          // the courier's head over the roof; a step back from the cab, it rises enough to see its chest as well.
+          const eyes = new THREE.Vector3(x, y + FOLLOW.sightLift, z);
+          const label = `cab at ${cab.x.toFixed(1)},${cab.z.toFixed(1)}, ${gap} off its side`;
+          expect(camera.position.distanceTo(eyes), label).toBeGreaterThan(FOLLOW.distance * 0.85);
+          expect(world.clearFraction(eyes, camera.position), label).toBe(1);
+          if (chestVisible) expect(world.clearFraction(new THREE.Vector3(x, y + FOLLOW.targetLift, z), camera.position), label).toBe(1);
+          checked += 1;
+        }
       }
     }
-    expect(checked).toBeGreaterThanOrEqual(cabs.length);
+    expect(checked).toBeGreaterThanOrEqual(2 * cabs.length);
   });
 
   it("gives the camera a floor: the ground plus clearance on the island, nothing beyond it", () => {
