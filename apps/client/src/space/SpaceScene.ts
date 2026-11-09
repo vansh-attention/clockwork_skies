@@ -3,6 +3,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import { SeededRandom } from "@clockwork/shared";
 import { GATES, PICKUPS, ROCKS, STATIONS } from "./map";
 import type { SpaceSession } from "./SpaceSession";
+import { fitIndicator } from "../hudMarker";
 import { eyeOf } from "./flight";
 import type { Ship } from "./types";
 
@@ -232,21 +233,8 @@ export function updateCockpitCamera(camera: T.PerspectiveCamera, ship: Ship): vo
   camera.updateMatrixWorld();
 }
 
-export function fitIndicator(x: number, y: number, behind: boolean,
-  out: { x: number; y: number; bearing: number; offscreen: boolean }): void {
-  x = Number.isFinite(x) ? x : 0.8;
-  y = Number.isFinite(y) ? y : 0;
-  if (behind) { x *= -1; y *= -1; }
-  out.offscreen = behind || Math.abs(x) > 0.8 || Math.abs(y) > 0.65;
-  if (out.offscreen) {
-    if (Math.abs(x) + Math.abs(y) < 1e-8) x = 0.8;
-    const scale = 1 / Math.max(Math.abs(x) / 0.8, Math.abs(y) / 0.65);
-    x *= scale; y *= scale;
-  }
-  out.bearing = Math.atan2(-y, x) * 180 / Math.PI + 90;
-  out.x = 50 + x * 50;
-  out.y = 50 - y * 50;
-}
+// fitIndicator now lives in hudMarker.ts (shared with the courier HUD); re-exported so existing imports keep working.
+export { fitIndicator };
 
 type SceneOptions = {
   rendererFactory?: () => T.WebGLRenderer;

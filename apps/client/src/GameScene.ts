@@ -1,8 +1,9 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { CLOCKWORK_WORLD, PAINTS } from "@clockwork/content";
+import { CLOCKWORK_WORLD } from "@clockwork/content";
 import { MATCH_RULES, V, angularDistance, type MatchEvent, type MatchState, type InputCommand } from "@clockwork/shared";
 import { createIllustratedMaterial, IllustratedComposer, type DebugView } from "@clockwork/render";
+import { createPlaneModel } from "./planeModel";
 
 export type HudState = {
   phase: string;
@@ -52,7 +53,6 @@ export class GameScene {
   private hudElapsed = 0;
   private flightInput: InputCommand | null = null;
   private spectatorId: string | null = null;
-  private soloPresentation = false;
 
   constructor(private readonly container: HTMLDivElement, private readonly onHud: (state: HudState) => void) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
@@ -89,7 +89,6 @@ export class GameScene {
     }
   }
   setReducedMotion(value: boolean) { this.reducedMotion = value; }
-  setSoloPresentation(value: boolean) { this.soloPresentation = value; }
   setFlightInput(value: InputCommand | null) { this.flightInput = value; }
   cycleSpectator() {
     const ids = Object.values(this.state?.players ?? {}).filter((player) => player.status === "active").map((player) => player.id);
@@ -297,22 +296,6 @@ export class GameScene {
     cockpit.add(left, right, dash, sight); this.camera.add(cockpit);
   }
 
-  private createPlane(paintId: string) {
-    const paint = PAINTS.find((candidate) => candidate.id === paintId) ?? PAINTS[0];
-    const group = new THREE.Group();
-    const body = createIllustratedMaterial({ color: paint.body, shadow: "#7c8178", surfaceId: 0.62 });
-    const accent = createIllustratedMaterial({ color: paint.accent, shadow: "#64392f", surfaceId: 0.66 });
-    const fuselage = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.7, 8, 8), body); fuselage.rotation.x = Math.PI / 2;
-    const nose = new THREE.Mesh(new THREE.ConeGeometry(1.2, 3, 8), accent); nose.rotation.x = -Math.PI / 2; nose.position.z = -5.5;
-    const wings = new THREE.Mesh(new THREE.BoxGeometry(10, 0.35, 3), body); wings.position.z = 0.5;
-    const tail = new THREE.Mesh(new THREE.BoxGeometry(4, 0.3, 1.8), accent); tail.position.z = 3.7;
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.3, 3, 2), accent); fin.position.set(0, 1.4, 3.2);
-    const prop = new THREE.Group(); prop.position.z = -7;
-    for (let i = 0; i < 3; i += 1) { const blade = new THREE.Mesh(new THREE.BoxGeometry(0.3, 5, 0.2), accent); blade.rotation.z = i * Math.PI * 2 / 3; prop.add(blade); }
-    group.add(fuselage, nose, wings, tail, fin, prop); group.userData.propeller = prop; this.propellers.push(prop);
-    return group;
-  }
-
   private createStormLine() {
     const geometry = new THREE.BufferGeometry().setFromPoints(Array.from({ length: 129 }, () => new THREE.Vector3()));
     const line = new THREE.LineLoop(geometry, new THREE.LineBasicMaterial({ color: 0xe7634f, transparent: true, opacity: 0.85, linewidth: 2 }));
@@ -351,10 +334,9 @@ export class GameScene {
     const playerIds = new Set(Object.keys(this.state.players));
     for (const [id, mesh] of this.playerMeshes) if (!playerIds.has(id)) { this.world.remove(mesh); this.playerMeshes.delete(id); }
     for (const [id, player] of Object.entries(this.state.players)) {
-      if (id === this.sessionId && !this.soloPresentation) continue;
+      if (id === this.sessionId) continue;
       let mesh = this.playerMeshes.get(id);
-      if (!mesh) { mesh = this.createPlane(player.paint); this.playerMeshes.set(id, mesh); this.world.add(mesh); }
-      mesh.scale.setScalar(id === this.sessionId && this.soloPresentation ? 5.5 : 1);
+      if (!mesh) { const model = createPlaneModel(player.paint); this.propellers.push(model.propeller); mesh = model.group; this.playerMeshes.set(id, mesh); this.world.add(mesh); }
       mesh.visible = player.status === "active";
       mesh.position.lerp(tmp.set(player.aircraft.position.x, player.aircraft.position.y, player.aircraft.position.z), 0.3);
       mesh.up.copy(mesh.position).normalize();
@@ -407,18 +389,6 @@ export class GameScene {
       const up = p.clone().normalize(); const forward = new THREE.Vector3(followed.aircraft.forward.x, followed.aircraft.forward.y, followed.aircraft.forward.z).normalize();
       this.camera.position.lerp(p.clone().add(up.multiplyScalar(18)).sub(forward.multiplyScalar(32)), 0.08);
       this.camera.up.copy(p).normalize(); this.camera.lookAt(p); return;
-    }
-    if (this.soloPresentation) {
-      const p = new THREE.Vector3(local.aircraft.position.x, local.aircraft.position.y, local.aircraft.position.z);
-      const forward = new THREE.Vector3(local.aircraft.forward.x, local.aircraft.forward.y, local.aircraft.forward.z).normalize();
-      const radialUp = p.clone().normalize();
-      const desired = p.clone().addScaledVector(radialUp, 235).addScaledVector(forward, -180);
-      this.camera.position.lerp(desired, 0.08);
-      this.camera.up.copy(radialUp);
-      this.camera.lookAt(p.clone().addScaledVector(forward, 95).addScaledVector(radialUp, -200));
-      this.cockpit.visible = false;
-      this.sightScreen = { x: 50, y: 50 };
-      return;
     }
     const p = new THREE.Vector3(local.aircraft.position.x, local.aircraft.position.y, local.aircraft.position.z);
     const forward = new THREE.Vector3(local.aircraft.forward.x, local.aircraft.forward.y, local.aircraft.forward.z).normalize();

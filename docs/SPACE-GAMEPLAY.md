@@ -2,7 +2,7 @@
 
 ## Current direction
 
-The first-person spacecraft slice lives at `?mode=local-space` in **The Drift Yard**, a bounded Cartesian station-and-asteroid arena. The illustrated globe now opens as a solo browser flight at `/`; the older multiplayer version lives at `?mode=legacy-online`. Neither offline slice requires the game server.
+The first-person spacecraft slice lives at `?mode=local-space` in **The Drift Yard**, a bounded Cartesian station-and-asteroid arena. An explorable illustrated hill town opens at `/`; the older multiplayer globe lives at `?mode=legacy-online`. Neither offline slice requires the game server.
 
 ## Local start
 

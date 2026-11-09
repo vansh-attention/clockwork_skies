@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 test("two real browser pilots enter the same authoritative bot-filled match", async ({ browser, baseURL }) => {
   const first = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -29,26 +29,31 @@ test("two real browser pilots enter the same authoritative bot-filled match", as
     await expect(b.locator(".counter strong")).toHaveText("16");
     await a.screenshot({ path: "test-results/cockpit.png" });
     await expect(a.locator("main")).toHaveAttribute("data-phase", /open|closing-1|closing-2|close-combat|final|complete/, { timeout: 25_000 });
-    const canvas = a.locator("canvas");
-    await a.bringToFront();
+    // The match is authoritative and bot-filled: on a slow run the bots can shoot a pilot down before this point.
+    // Fire, boost and open the manual as a pilot still in the air (a spectator cannot fire).
+    const flying = async (page: Page) => (await page.locator(".center-message.spectator").count()) === 0;
+    const pilot = (await flying(a)) ? a : b;
+    expect(await flying(pilot)).toBe(true);
+    const canvas = pilot.locator("canvas");
+    await pilot.bringToFront();
     await canvas.click({ position: { x: 720, y: 450 } });
-    await a.mouse.down();
-    const heat = a.locator(".left-instruments .instrument").filter({ hasText: "CANNON HEAT" }).locator("strong");
+    await pilot.mouse.down();
+    const heat = pilot.locator(".left-instruments .instrument").filter({ hasText: "CANNON HEAT" }).locator("strong");
     await expect.poll(async () => Number.parseFloat(await heat.innerText())).toBeGreaterThan(0);
-    await a.mouse.up();
-    await a.keyboard.down("Space");
-    const boost = a.locator(".left-instruments .instrument").filter({ hasText: "BOOST" }).locator("strong");
+    await pilot.mouse.up();
+    await pilot.keyboard.down("Space");
+    const boost = pilot.locator(".left-instruments .instrument").filter({ hasText: "BOOST" }).locator("strong");
     await expect.poll(async () => Number.parseFloat(await boost.innerText())).toBeLessThan(99);
-    await a.keyboard.up("Space");
-    await a.keyboard.press("q");
-    await a.keyboard.press("1");
-    await a.evaluate(() => document.exitPointerLock());
-    await a.getByRole("button", { name: /flight manual/i }).click();
-    await expect(a.getByRole("region", { name: /flight manual/i })).toBeVisible();
-    await a.screenshot({ path: "test-results/manual.png" });
-    await a.getByRole("button", { name: /close flight manual/i }).click();
-    await a.keyboard.press("q");
-    await a.keyboard.press("1");
+    await pilot.keyboard.up("Space");
+    await pilot.keyboard.press("q");
+    await pilot.keyboard.press("1");
+    await pilot.evaluate(() => document.exitPointerLock());
+    await pilot.getByRole("button", { name: /flight manual/i }).click();
+    await expect(pilot.getByRole("region", { name: /flight manual/i })).toBeVisible();
+    await pilot.screenshot({ path: "test-results/manual.png" });
+    await pilot.getByRole("button", { name: /close flight manual/i }).click();
+    await pilot.keyboard.press("q");
+    await pilot.keyboard.press("1");
     expect(errors).toEqual([]);
     console.log(JSON.stringify({ room: roomA, distinctPilots: true, playerCount: 16, browserErrors: errors.length }));
   } finally {

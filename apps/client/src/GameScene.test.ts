@@ -29,3 +29,18 @@ it("publishes instruments at most ten times per second", () => {
   expect(onHud.mock.calls.length).toBeLessThanOrEqual(10);
   expect(onHud.mock.calls.length).toBeGreaterThanOrEqual(8);
 });
+
+it("registers each remote plane's propeller when it is first synced", () => {
+  const aircraft = createAircraft({ x: 0, y: 430, z: 0 }, { x: 0, y: 0, z: -1 });
+  const state = {
+    players: { remote: { id: "remote", status: "active", paint: "sage-gold", aircraft } },
+    pickups: {}, projectiles: {}, storm: { center: { x: 0, y: 1, z: 0 }, angularRadius: 3 },
+  } as unknown as MatchState;
+  type Internals = { createStormLine: () => THREE.LineLoop; syncState: () => void; playerMeshes: Map<string, THREE.Group>; propellers: THREE.Object3D[] };
+  const scene = Object.create(GameScene.prototype) as Internals;
+  Object.assign(scene, { state, sessionId: "local", world: new THREE.Scene(), playerMeshes: new Map(), pickupMeshes: new Map(), rocketMeshes: new Map(), propellers: [] });
+  Object.assign(scene, { stormLine: scene.createStormLine() });
+  scene.syncState();
+  expect(scene.propellers).toHaveLength(1);
+  expect(scene.propellers[0]).toBe(scene.playerMeshes.get("remote")!.userData.propeller);
+});

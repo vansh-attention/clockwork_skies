@@ -1,0 +1,126 @@
+/* A pocket London: printed paper, red enamel signs and a city left open to explore. */
+.city-app{--ink:#283b3b;--paper:#f6f0db;--copper:#b54332;--green:#3d6653;font-family:'Trebuchet MS','Gill Sans',sans-serif;color:var(--ink)}
+.city-app h1,.city-app h2,.city-app .wordmark strong{font-family:Georgia,'Palatino Linotype',serif}
+.city-app .title-screen{padding:clamp(28px,4.5vw,72px);background:linear-gradient(90deg,#f1efdaa8 0%,#f1efda7a 25%,#f1efda00 58%)}
+.city-app .title-kicker{font-size:9px;letter-spacing:.2em;color:#354f4c}
+.city-app .title-kicker i{width:44px;background:#b54332}
+.city-app h1{font-size:clamp(64px,8.4vw,126px);font-weight:700;line-height:.82;letter-spacing:-.065em;margin:32px 0 25px;text-shadow:1px 2px 0 #f9f1dba8}
+.city-app h1>span{font-family:'Trebuchet MS','Gill Sans',sans-serif;font-size:.315em;letter-spacing:.28em;font-weight:700;margin:0 0 17px 4px}
+.city-app h1>em{font-size:1em;font-weight:400;font-style:normal;letter-spacing:-.07em;color:var(--copper)}
+.city-app .title-screen>p{max-width:440px;font-size:13px;line-height:1.7;margin:0 0 26px;color:#354f4c;text-shadow:0 1px 1px #f9f1db}
+.city-app .launch-card{width:338px;max-width:100%;padding:20px 22px;background:#f8f1dce8;border:1px solid #51625c;border-top:3px solid var(--copper);box-shadow:3px 4px 0 #334c4533}
+.city-app .launch-card::before{display:none}
+.city-app .form-heading{padding-bottom:11px;margin-bottom:12px;border-bottom:1px solid #69756b55;font-size:9px;letter-spacing:.17em}
+.city-app .form-heading strong{font-family:Georgia,serif;font-size:21px;font-weight:400;letter-spacing:.025em}
+.city-time{font-variant-numeric:tabular-nums}
+.island-map-button{position:absolute;left:28px;bottom:28px;min-height:44px;padding:12px 17px;background:#f6f0dbeb;border:1px solid #51625c;font:11px 'Trebuchet MS',sans-serif;letter-spacing:.08em;color:#283b3b}
+.city-app .title-manual{min-height:44px;min-width:64px}
+.city-card-note{margin:0 0 18px;font-size:12px;line-height:1.65;color:#526153}
+.city-app .launch{border-radius:0;min-height:50px;background:var(--copper);border-color:var(--copper);font-size:11px;letter-spacing:.15em;box-shadow:0 3px 0 #7e3429;transition:background .18s,transform .18s}
+.city-app .launch:hover{background:#963a2d;transform:translateY(-1px)}
+.city-app .launch:active{transform:translateY(2px);box-shadow:0 1px 0 #7e3429}
+.city-app .launch-card .look-around{display:block;width:100%;min-height:44px;margin-top:12px;border-radius:0;border-color:#68756c77;background:transparent;font-size:10px;letter-spacing:.14em}
+.city-app .launch-card .look-around:hover{background:#fff7e3}
+.city-app .launch-card small{margin-top:16px;font-size:9px;line-height:1.6;letter-spacing:.01em;color:#607064}
+.city-app .title-manual{font-size:9px;margin-top:19px;letter-spacing:.16em;gap:38px}
+.city-app .title-footer{font-size:8px;letter-spacing:.16em;left:clamp(28px,4.5vw,72px);right:clamp(28px,4.5vw,72px);color:#324d49}
+.city-app.exploring .game-canvas canvas{cursor:grab}
+.city-app.exploring .game-canvas canvas:active{cursor:grabbing}
+.city-app .game-canvas canvas:focus-visible{outline:3px solid #b54332;outline-offset:-3px}
+/* In play the canvas holds the walk keys; the prompt shows where input goes. */
+.city-app[data-phase=play] .game-canvas canvas:focus-visible{outline:none}
+
+.city-app .city-header{top:23px;left:28px;right:28px}
+.city-app .wordmark{gap:9px}
+.city-app .wordmark strong{font-size:15px;font-weight:700;letter-spacing:.015em;text-shadow:0 1px 0 #f6f0db}
+.city-app .mark{width:29px;height:29px;font-size:21px;border-width:1px;background:#f6f0dbd9;color:var(--copper)}
+.city-app .phase{padding:8px 14px;gap:14px;border-color:#4b5c5277;background:#f6f0dbeb;box-shadow:2px 2px 0 #283b3b22}
+.city-app .phase span{font-size:9px;letter-spacing:.1em}
+.city-app .phase b{font-family:Georgia,serif;font-size:22px;font-weight:400}
+.city-app .city-header>button{font-size:9px;min-height:39px;border-radius:0;background:#f6f0dbeb}
+
+.district-panel{position:absolute;top:97px;left:28px;width:204px;color:var(--ink);background:#f6f0dbe8;border:1px solid #4b5c5277;box-shadow:3px 3px 0 #283b3b22;padding:13px 0 4px}
+.district-panel-title{display:block;padding:0 14px 11px;font-size:8px;font-weight:700;letter-spacing:.17em;border-bottom:1px solid #65786a44;color:#5d7165}
+.district-panel ul{list-style:none;margin:0;padding:0}
+.district-panel button{display:grid;grid-template-columns:28px 1fr;align-items:center;width:100%;min-height:40px;border:0;border-bottom:1px solid #65786a22;border-left:3px solid transparent;border-radius:0;background:transparent;color:var(--ink);text-align:left;padding:9px 12px;font-size:11px;font-weight:400;letter-spacing:.015em;transition:background .15s}
+.district-panel li:last-child button{border-bottom:0}
+.district-panel button:hover{background:#fff9eab3}
+.district-panel button[aria-pressed=true]{background:#344f48;color:var(--paper);border-left-color:var(--accent)}
+.district-panel abbr{text-decoration:none;font-size:8px;font-weight:700;letter-spacing:.08em;color:#7c8677}
+.district-panel button[aria-pressed=true] abbr{color:#e3cb8c}
+
+.district-card{position:absolute;left:50%;bottom:65px;transform:translateX(-50%);width:480px;max-width:calc(100% - 32px);background:#f8f2dfee;border:1px solid #4b5c52;border-left:4px solid var(--accent);box-shadow:4px 4px 0 #283b3b33;padding:19px 22px}
+.district-card>span{display:block;font-size:8px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:#5d7165}
+.district-card h2{margin:7px 0 7px;font-size:34px;font-weight:400;line-height:1.08;letter-spacing:-.035em}
+.district-card p{margin:0 0 16px;font-size:12px;line-height:1.65;color:#435e53}
+.district-actions{display:flex;flex-wrap:wrap;gap:7px}
+.district-actions button{font-size:8px;padding:10px 11px;border-radius:0;background:transparent;letter-spacing:.08em;min-height:34px;border-color:#63746a66}
+.district-actions button:hover{background:#fff9ea}
+.district-actions .district-back{margin-left:auto;color:var(--copper)}
+.city-app .control-hint{background:#f6f0dbdc;color:#3d5b50;font-size:8px;letter-spacing:.07em;border-bottom:1px solid #3d5b5055}
+.city-error{top:auto;bottom:150px;transform:translateX(-50%)}
+.city-app .city-guide{background:#faf3df;border-color:#4b5c52;box-shadow:-5px 5px 0 #283b3b33}
+.city-app .city-guide h2{font-size:31px;font-weight:400;letter-spacing:-.035em}
+.city-app .city-guide>div:first-child{font-size:9px;letter-spacing:.1em}
+.city-app .courier-panel{background:#f6f0dbed;color:var(--ink);border-color:#4b5c5277;box-shadow:3px 3px 0 #283b3b22;backdrop-filter:none}
+.city-app .courier-eyebrow{color:#7d6251;border-bottom-color:#65786a44;font-size:8px;letter-spacing:.15em}
+.city-app .courier-panel h2{font-size:25px;letter-spacing:-.025em}
+.city-app .courier-panel li{color:#6a796d;font-size:11px}
+.city-app .courier-panel li.current{color:var(--ink)}
+.city-app .courier-panel li::before{border-color:#6b7c6d}
+.city-app .courier-panel li.current::before{border-color:var(--copper);background:var(--copper)}
+.city-app .courier-panel li.done{color:#3d7659}
+.city-app .courier-ticks{color:var(--copper)}
+.city-app .courier-prompt{background:#faf3df;border-color:#4b5c52;box-shadow:3px 3px 0 #283b3b33;letter-spacing:.035em}
+
+@media(max-height:800px) and (min-width:701px){
+  .city-app .title-screen{padding-top:28px}
+  .city-app h1{font-size:clamp(66px,8vw,100px);margin:24px 0 19px}
+  .city-app .title-screen>p{margin-bottom:20px;font-size:12px}
+  .city-app .launch-card{padding:15px 20px}
+  .city-card-note{margin-bottom:13px}
+  .city-app .launch-card small{margin-top:12px}
+  .city-app .title-manual{margin-top:13px}
+}
+@media(max-height:620px) and (min-width:701px){
+  .city-app .title-screen{overflow-y:auto;padding-top:24px;padding-bottom:24px}
+  .city-app .title-footer{position:static;margin-top:25px}
+}
+@media(max-width:700px){
+  .city-app.at-title{height:100svh;overflow:auto}
+  .city-app .title-screen{min-height:100svh;padding:28px 24px 35px;background:linear-gradient(180deg,#f1efda99 0%,#f1efda55 26%,#f1efda00 46%,#f1efda66 69%,#f1efdad9 100%);display:flex;flex-direction:column;align-items:flex-start}
+  .city-app .title-screen>*{flex-shrink:0}
+  .city-app .title-kicker{font-size:8px;letter-spacing:.14em}
+  .city-app h1{font-size:clamp(59px,16.5vw,105px);margin:25px 0 12px}
+  .city-app h1>span{font-size:.29em;letter-spacing:.25em;margin-bottom:11px}
+  .city-app .title-screen>p{font-size:11px;max-width:320px;line-height:1.6;margin-bottom:18px}
+  .city-app .launch-card{width:308px;margin-top:auto;padding:14px 18px}
+  .city-app .form-heading{padding-bottom:7px;margin-bottom:9px}
+  .city-card-note{font-size:11px;margin-bottom:12px}
+  .city-app .launch-card small{margin-top:10px;font-size:8px}
+  .city-app .launch-card .look-around{margin-top:9px;min-height:39px}
+  .city-app .title-manual{position:absolute;right:24px;bottom:39px;font-size:8px;gap:13px}
+  .city-app .title-footer{display:none}
+  .city-app .city-header{top:12px;left:12px;right:12px}
+  .city-app .wordmark strong{display:none}
+  .city-app .phase{padding:7px 10px;gap:9px}
+  .city-app .phase span{font-size:8px}
+  .city-app .phase b{font-size:20px}
+  .city-app .city-header>button{min-height:35px;font-size:8px}
+  .district-panel{top:auto;bottom:12px;left:12px;right:12px;width:auto;padding:0}
+  .district-panel-title{display:none}
+  .district-panel ul{display:flex;overflow-x:auto;scrollbar-width:thin}
+  .district-panel li{flex:0 0 auto}
+  .district-panel li:last-child button,.district-panel button{border-bottom:0}
+  .district-panel button{display:flex;gap:8px;white-space:nowrap;border-left:0;border-top:3px solid transparent;padding:12px 14px;min-height:44px}
+  .district-panel button[aria-pressed=true]{border-top-color:var(--accent)}
+  .district-card{bottom:79px;padding:15px 17px}
+  .district-card h2{font-size:28px}
+  .district-actions .district-back{margin-left:0}
+  .city-app .control-hint{display:none}
+  .city-app .courier-panel h2{font-size:18px}
+}
+@media(max-width:420px){
+  .city-app .title-manual{position:static;margin-top:13px}
+  .city-app .title-screen{padding-bottom:22px}
+}

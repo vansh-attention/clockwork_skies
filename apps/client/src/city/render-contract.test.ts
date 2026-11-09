@@ -1,0 +1,140 @@
+import { describe, expect, it } from "vitest";
+import * as THREE from "three";
+import { SETT_LIFT, buildCity, handsGeometry } from "./buildCity";
+import { STAIR_BEARINGS, SUMMIT, polarToXZ } from "./layout";
+import { LANTERNFALL_CENTER, buildLanternfall, buildLaunchersAndGates } from "../courier/outpost";
+import { createBeacon, createCourierModel } from "../courier/models";
+import { createPlaneModel } from "../planeModel";
+import { buildAmbient } from "./ambient";
+import { Sky } from "./sky";
+import { createHillTownWalkWorld } from "../courier/walkWorld";
+import { buildResidents } from "./residents";
+import { createHillTownLayout } from "./layout";
+
+// These retained contracts exercise the retired hill-town builder; littleLondon.test covers the default island.
+const city = buildCity(createHillTownLayout());
+
+function materialsOf(object: THREE.Object3D): THREE.Material[] {
+  const material = (object as THREE.Mesh).material;
+  if (!material) return [];
+  return Array.isArray(material) ? material : [material];
+}
+
+it("draws every city surface into both illustration buffers", () => {
+  const incompatible: string[] = [];
+  city.group.traverse((object) => {
+    for (const material of materialsOf(object)) {
+      if (!(material instanceof THREE.ShaderMaterial) || !material.fragmentShader.includes("location = 1")) incompatible.push(object.name || object.type);
+    }
+  });
+  expect(incompatible).toEqual([]);
+});
+
+it("stays within the draw-call budget", () => {
+  let meshes = 0;
+  city.group.traverse((object) => { if (object instanceof THREE.Mesh) meshes += 1; });
+  expect(meshes).toBeLessThanOrEqual(60);
+});
+
+it("gives every material its own surface id so the ink pass outlines where they meet", () => {
+  const materials = new Set<THREE.ShaderMaterial>();
+  city.group.traverse((object) => materialsOf(object).forEach((material) => materials.add(material as THREE.ShaderMaterial)));
+  const ids = [...materials].map((material) => material.uniforms.uSurfaceId?.value as number);
+  expect(new Set(ids).size).toBe(materials.size);
+  expect(Math.max(...ids)).toBeLessThan(1);
+});
+
+it("lays granite setts on the summit: a frame round the plinth and a path to every stairway head", () => {
+  const setts: THREE.Vector3[] = [];
+  city.group.traverse((object) => {
+    if (!(object instanceof THREE.Mesh) || object.name !== "roof0") return;
+    const position = object.geometry.getAttribute("position");
+    for (let i = 0; i < position.count; i += 1) {
+      const point = new THREE.Vector3().fromBufferAttribute(position, i).applyMatrix4(object.matrixWorld);
+      if (Math.abs(point.y - (SUMMIT.top + SETT_LIFT)) < 1e-4) setts.push(point);
+    }
+  });
+  expect(setts.length).toBeGreaterThanOrEqual(12 * 4);
+  // Every stairway gets a path reaching the summit's edge.
+  for (const bearing of STAIR_BEARINGS) {
+    const out = polarToXZ(bearing, SUMMIT.radius - 0.5);
+    expect(setts.some((point) => Math.hypot(point.x - out.x, point.z - out.z) < 3.5)).toBe(true);
+  }
+  // None under the tower plinth (it would only fight the stone).
+  for (const point of setts) expect(Math.max(Math.abs(point.x), Math.abs(point.z))).toBeGreaterThanOrEqual(18 - 1e-6);
+});
+
+it("builds four clock faces, a focus point per district and the ticking parts", () => {
+  expect(city.faces).toHaveLength(4);
+  expect(city.focusPoints).toHaveLength(8);
+  // London retains the rim and clock crown plus Westminster's human-scale clock service hatch.
+  expect(city.spinners).toHaveLength(3);
+  for (const spinner of city.spinners) expect(spinner.object.parent).toBe(city.group);
+  expect(city.anchor).toBeNull();
+  const hands = handsGeometry(city.faces, Math.PI / 2, Math.PI);
+  expect(hands.getAttribute("position").count).toBeGreaterThan(0);
+});
+
+describe("the whole playable world", () => {
+  // The same assembly CityScene and CourierController make: one palette for the town, both outposts, the courier and beacon.
+  const lanternfall = buildLanternfall(city.palette);
+  const launchers = buildLaunchersAndGates(city.palette);
+  const courier = createCourierModel(city.palette);
+  const beacon = createBeacon(city.palette);
+  const plane = createPlaneModel("brass", "world");
+  const ambient = buildAmbient(city.palette, createHillTownWalkWorld());
+  const sky = new Sky();
+  const residents = buildResidents(city.palette);
+  const parts = [city.group, lanternfall.group, launchers.group, courier.group, beacon, plane.group, ambient.group, residents.group, sky.dome];
+
+  const meshesOf = (root: THREE.Object3D) => {
+    const meshes: THREE.Mesh[] = [];
+    root.traverse((object) => { if (object instanceof THREE.Mesh) meshes.push(object); });
+    return meshes;
+  };
+
+  it("draws Lanternfall, the launchers, the gates, the courier and the plane into both illustration buffers", () => {
+    const incompatible = parts.flatMap(meshesOf).flatMap((mesh) => materialsOf(mesh)
+      .filter((material) => !(material instanceof THREE.ShaderMaterial) || !material.fragmentShader.includes("location = 1"))
+      .map(() => mesh.name || mesh.type));
+    expect(incompatible).toEqual([]);
+  });
+
+  it("stays within the 110 draw-call world budget (sky, grass, pennants, birds and smoke included)", () => {
+    // Residents once shared six instanced draws. Each is now one skinned person, culled on its own (frustum and
+    // distance), so the scenery keeps the same budget and residents add one draw per person actually in view.
+    const scenery = parts.filter((part) => part !== residents.group);
+    expect(scenery.reduce((total, part) => total + meshesOf(part).length, 0) + 6).toBeLessThanOrEqual(110);
+    const people = meshesOf(residents.group);
+    expect(people).toHaveLength(residents.agents.length);
+    expect(people.every((person) => person.frustumCulled)).toBe(true);
+  });
+
+  it("builds Lanternfall with its lighthouse lamp and rim gear ticking, and puts it where the flight world expects", () => {
+    expect(lanternfall.group.name).toBe("Lanternfall Isle");
+    expect(lanternfall.group.position.toArray()).toEqual([LANTERNFALL_CENTER.x, LANTERNFALL_CENTER.y, LANTERNFALL_CENTER.z]);
+    expect(lanternfall.spinners.length).toBeGreaterThanOrEqual(2);
+    expect(meshesOf(lanternfall.group).length).toBeGreaterThan(5);
+    expect(meshesOf(launchers.group).length).toBeGreaterThan(2);
+  });
+
+  it("draws clouds only in the sky, flat as the reference's: no puffed cloud meshes in the world", () => {
+    const cloud = city.palette.get("cloud");
+    const puffed = parts.flatMap(meshesOf).filter((mesh) => materialsOf(mesh).includes(cloud)).map((mesh) => mesh.name || mesh.type);
+    expect(puffed).toEqual([]);
+  });
+
+  it("keeps every palette surface id below 1 after the whole world is built", () => {
+    const ids = new Set<number>();
+    for (const part of [city.group, lanternfall.group, launchers.group, courier.group, beacon, ambient.group]) {
+      for (const mesh of meshesOf(part)) {
+        for (const material of materialsOf(mesh)) {
+          // Materials that draw no surface id (the chimney smoke leaves the ids beneath as they were) are not counted.
+          const id = (material as THREE.ShaderMaterial).uniforms.uSurfaceId?.value as number | undefined;
+          if (id !== undefined) ids.add(id);
+        }
+      }
+    }
+    expect(Math.max(...ids)).toBeLessThan(1);
+  });
+});
