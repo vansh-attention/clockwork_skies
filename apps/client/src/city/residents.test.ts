@@ -4,7 +4,7 @@ import { createHillTownWalkWorld } from "../courier/walkWorld";
 import { Palette } from "./kit";
 import { LONDON_SURFACE } from "./londonTerrain";
 import { createCityLayout, createHillTownLayout, polarToXZ } from "./layout";
-import { MAKE_WAY, RESIDENT_CLEARANCE, buildResidents, createResidentAgents, easedProgress, type ResidentRoute } from "./residents";
+import { MAKE_WAY, RESIDENT_CLEARANCE, buildResidents, createResidentAgents, residentIdentity, residentLook, easedProgress, type ResidentRoute } from "./residents";
 import { GAITS } from "../courier/humanGait";
 
 const layout = createCityLayout();
@@ -77,6 +77,68 @@ describe("London residents", () => {
     }
     expect(residents.agents.filter((agent) => agent.district === 6 && agent.stationary).length).toBeGreaterThanOrEqual(2);
     expect(residents.group.userData).toMatchObject({ cosmetic: true, interactive: false });
+  });
+
+  it("dresses all32 neighbours in the reference's relaxed knits and medium shag, with slender natural proportions", () => {
+    const identities = residents.agents.map(residentIdentity);
+    const looks = residents.agents.map(residentLook);
+    expect(identities.filter((person) => person.gender === "woman")).toHaveLength(16);
+    expect(identities.filter((person) => person.gender === "man")).toHaveLength(16);
+    expect(new Set(identities.map((person) => person.age))).toEqual(new Set(["young", "adult", "older"]));
+    expect(looks.filter((look) => look.garment === "hoodie")).toHaveLength(16);
+    expect(looks.filter((look) => look.garment === "cardigan")).toHaveLength(16);
+    expect(new Set(looks.map((look) => look.hairStyle))).toEqual(new Set(["layered"]));
+    expect(new Set(looks.map((look) => look.hair)).size).toBeGreaterThanOrEqual(5);
+    expect(new Set(looks.map((look) => look.skin)).size).toBeGreaterThanOrEqual(5);
+    expect(new Set(looks.map((look) => JSON.stringify(look))).size).toBe(32);
+    for (const [index, look] of looks.entries()) {
+      expect(look.face).toBe("anime"); expect(look.head).toBeGreaterThanOrEqual(1.04); expect(look.head).toBeLessThanOrEqual(1.12);
+      expect(look.build).toBeGreaterThanOrEqual(0.82); expect(look.build).toBeLessThan(0.96);
+      expect(look.fit).toBeGreaterThanOrEqual(1.03); expect(look.fit).toBeLessThan(1.12);
+      expect(look.trouserFit).toBeGreaterThanOrEqual(1.04); expect(look.trouserFit).toBeLessThan(1.12);
+      expect(look.limbs).toBeGreaterThanOrEqual(0.75); expect(look.limbs).toBeLessThan(0.86);
+      expect(look.hands).toBeGreaterThanOrEqual(0.74); expect(look.hands).toBeLessThan(0.82);
+      // Fullness compounds with anatomy; bound their product to exclude the former balloon torso/sleeves.
+      expect(look.build! * look.fit!).toBeLessThan(1.08);
+      expect(look.limbs! * look.fit!).toBeLessThan(0.97);
+      expect(look.hairLength).toBeGreaterThanOrEqual(1); expect(look.hairLength).toBeLessThan(1.4);
+      expect(look.longTop).toBe(true); expect(look.legs).toBe("trousers");
+      expect(look.cap).toBeUndefined(); expect(look.collar).toBeUndefined(); expect(look.pockets).toBe(false);
+      // Every pair of trousers remains a muted denim blue, rather than the previous purple/khaki wardrobe.
+      const denim = new THREE.Color(look.trousers);
+      expect(denim.b).toBeGreaterThan(denim.g); expect(denim.g).toBeGreaterThan(denim.r);
+      expect(["#a4c994", "#97bd8e", "#d09a83", "#dca993", "#e7dfc9", "#d7d3bd"]).toContain(look.jacket);
+      expect(people[index]!.userData).toMatchObject(identities[index]!);
+    }
+  });
+
+  it("keeps every variant's actual skinned soles on the floor in the held pose", () => {
+    residents.update(0, true); residents.group.updateMatrixWorld(true);
+    const point = new THREE.Vector3();
+    people.forEach((person, index) => {
+      const mesh = figureOf(index), positions = mesh.geometry.getAttribute("position");
+      let sole = Infinity;
+      for (let vertex = 0; vertex < positions.count; vertex += 1) {
+        point.fromBufferAttribute(positions, vertex);
+        mesh.applyBoneTransform(vertex, point).applyMatrix4(mesh.matrixWorld);
+        sole = Math.min(sole, point.y);
+      }
+      expect(sole - person.position.y, person.name).toBeGreaterThanOrEqual(-0.005);
+      expect(sole - person.position.y, person.name).toBeLessThan(0.01);
+    });
+  });
+
+  it("staggers blinks across the crowd rather than closing every face on the same frame", () => {
+    let maxClosed = 0, blinkSamples = 0;
+    for (let frame = 0; frame < 264; frame += 1) {
+      residents.update(frame / 60, false);
+      const closed = people.filter((_, index) => figureOf(index).skeleton.bones.find((bone) => bone.name === "eyes")!.scale.y < 0.8).length;
+      maxClosed = Math.max(maxClosed, closed); blinkSamples += closed;
+    }
+    expect(blinkSamples).toBeGreaterThan(40); // the clocks actually blink during this full cycle
+    expect(maxClosed).toBeLessThan(8); // no synchronized whole-population blink
+    residents.update(5, true);
+    people.forEach((_, index) => expect(figureOf(index).skeleton.bones.find((bone) => bone.name === "eyes")!.scale.y).toBe(1));
   });
 
   it("stands every resident on the ground drawn where they are, as they walk", () => {

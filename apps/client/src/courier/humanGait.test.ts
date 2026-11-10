@@ -226,7 +226,8 @@ describe("human gaits", () => {
     for (const hz of [30, 144]) {
       const other = run(hz);
       // The stride is integrated per frame while its gait blend eases, so phase may drift by a hair (< 0.02 cycle).
-      expect(Math.abs(other.phase - base.phase)).toBeLessThan(0.02);
+      const phaseGap = Math.abs(other.phase - base.phase);
+      expect(Math.min(phaseGap, 1 - phaseGap)).toBeLessThan(0.02);
       expect(other.move).toBeCloseTo(base.move, 2);
       expect(other.jog).toBeCloseTo(base.jog, 2);
     }

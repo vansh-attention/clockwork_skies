@@ -14,6 +14,7 @@ import { ATMOSPHERE_RATE, blendLook, FOG_NEAR, GROUND_LIGHT, INK, londonGrade, S
 import { buildAmbient, type BuiltAmbient } from "./ambient";
 import { createHillTownWalkWorld } from "../courier/walkWorld";
 import { buildResidents, type BuiltResidents } from "./residents";
+import { buildAnimals, type BuiltAnimals } from "./animals";
 
 export type CityMode = "title" | "explore" | "play";
 export type Nudge = "left" | "right" | "up" | "down" | "in" | "out";
@@ -21,6 +22,7 @@ export type CourierDiagnostics = { mode: "walk" | "fly"; position: number[]; tas
 export type CityDiagnostics = {
   mode: CityMode; focused: number | null; calls: number; triangles: number; camera: number[]; target: number[]; courier: CourierDiagnostics | null;
   population: number;
+  animals?: number;
   /** Names of the scene's top-level parts (town, Lanternfall, launchers and gates, courier...), so tests can see what is drawn. */
   parts: string[];
 };
@@ -76,6 +78,7 @@ export class CityScene {
   private readonly sky = new Sky();
   private readonly ambient: BuiltAmbient;
   private readonly residents: BuiltResidents;
+  private readonly animals: BuiltAnimals;
   private readonly focus = new THREE.Vector3();
   private elapsed = 0;
   private shadowAge = 0;
@@ -123,7 +126,7 @@ export class CityScene {
       this.renderer.shadowMap.autoUpdate = false;
       // The composer renders twice per frame; reset by hand so the totals cover the whole frame.
       this.renderer.info.autoReset = false;
-      canvas.setAttribute("aria-label", "Little London island. Drag to look around; arrow keys circle the island.");
+      canvas.setAttribute("aria-label", "Little Islands. Drag to look around; arrow keys circle the island.");
       canvas.tabIndex = 0;
       container.appendChild(canvas);
       this.composer = new IllustratedComposer(this.renderer);
@@ -149,6 +152,8 @@ export class CityScene {
       this.world.add(this.ambient.group);
       this.residents = buildResidents(this.city.palette, this.layout);
       this.world.add(this.residents.group);
+      this.animals = buildAnimals(this.city.palette, this.layout);
+      this.world.add(this.animals.group);
       this.world.add(...this.sun.objects);
       illustratedEnvironment.uSunDirection.value.copy(SUN_DIRECTION);
       this.spinners = [...this.city.spinners, ...outposts.flatMap((outpost) => outpost.spinners)];
@@ -258,7 +263,7 @@ export class CityScene {
       layout: this.layout,
       freeRoam: !!this.layout.plan,
       world: this.world, camera: this.camera, controls, palette: this.city.palette, canvas: this.canvas, reducedMotion: () => this.reducedMotion,
-      people: (x, z, radius) => this.residents.blocks(x, z, radius),
+      people: (x, z, radius) => this.residents.blocks(x, z, radius) || (this.animals?.blocks?.(x, z, radius) ?? false),
     });
     this.hudElapsed = 0;
     this.courier.start();
@@ -325,6 +330,7 @@ export class CityScene {
   diagnostics(): CityDiagnostics {
     return { mode: this.mode, focused: this.focused, calls: this.stats.calls, triangles: this.stats.triangles,
       population: this.residents.agents.length,
+      animals: this.animals?.agents.length ?? 0,
       camera: this.camera.position.toArray(), target: this.controls.target.toArray(), courier: this.courierDiagnostics(),
       parts: this.world.children.map((child) => child.name).filter((name) => name.length > 0) };
   }
@@ -486,6 +492,7 @@ export class CityScene {
     this.ambient.update(this.elapsed, this.reducedMotion);
     // Walkers make way for the courier while she is on foot in the town.
     this.residents.update(this.elapsed, this.reducedMotion, this.camera.position, this.mode === "play" ? this.courier?.position() ?? null : null);
+    this.animals.update(this.elapsed, this.reducedMotion, this.camera.position);
     this.fitSun(dt);
     this.renderer.info.reset();
     this.sky.update(this.camera, this.elapsed, this.pixelRatio);
@@ -591,6 +598,7 @@ export class CityScene {
     this.sky?.dispose();
     resetIllustratedEnvironment();
     this.residents.dispose();
+    this.animals?.dispose();
     this.composer.dispose();
     this.gradeLut.dispose();
     this.renderer.dispose();

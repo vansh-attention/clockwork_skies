@@ -5,8 +5,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 // even when foliage, masonry and clothing intersect across the camera-to-player sight line.
 // Run against the local Vite server: node tools/london-character-check.mjs [URL]
 const motionCheck = process.argv.includes("--motion");
+const castCheck = process.argv.includes("--cast");
 const native = process.argv.includes("--native");
-const output = motionCheck ? "artifacts/cute-courier-motion" : "artifacts/character-intersections";
+const outputArg = process.argv.indexOf("--output");
+const output = outputArg >= 0 ? process.argv[outputArg + 1] : castCheck ? "artifacts/anime-cast" : motionCheck ? "artifacts/cute-courier-motion" : "artifacts/character-intersections";
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch(native ? { executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", args: ["--enable-unsafe-swiftshader"] } : { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, ...(motionCheck ? { recordVideo: { dir: output, size: { width: 1280, height: 800 } } } : {}) });
@@ -51,19 +53,44 @@ try {
     motion = await page.evaluate(() => { window.__motionSampling = false; return { samples: window.__localMotion, reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches }; });
     await page.screenshot({ path: `${output}/after-motion.png` });
   }
+  // Re-establish a forward-facing courier before orbiting: the motion sequence finishes with a reverse, so a
+  // fixed half-turn immediately afterwards would show the back again and mislabel it as the front proof.
+  if (motionCheck) {
+    await page.keyboard.down("w"); await page.waitForTimeout(550); await page.keyboard.up("w"); await page.waitForTimeout(250);
+  }
   await page.mouse.move(400, 420);
   await page.mouse.down();
   await page.mouse.move(970, 420, { steps: 24 });
   await page.mouse.up();
   await page.waitForTimeout(700);
   await page.screenshot({ path: `${output}/playable-front.png` });
+  if (castCheck) {
+    const drag = await page.evaluate(async () => {
+      const { createAnimalAgents } = await import("/src/city/animals.ts");
+      const pet = createAnimalAgents()[2];
+      window.__CLOCKWORK_COURIER__.teleportTo(pet.position.x, pet.position.z + 4);
+      const { camera, courier } = JSON.parse(window.render_game_to_text());
+      const p = courier.position;
+      const current = Math.atan2(p[0] - camera[0], -(p[2] - camera[2]));
+      const desired = Math.atan2(pet.position.x - p[0], -(pet.position.z - p[2]));
+      return Math.atan2(Math.sin(desired - current), Math.cos(desired - current)) / 0.0055;
+    });
+    await page.mouse.move(600, 420); await page.mouse.down();
+    await page.mouse.move(600 + drag, 420, { steps: 20 }); await page.mouse.up();
+    await page.waitForTimeout(700);
+    await page.screenshot({ path: `${output}/pet-in-world.png` });
+  }
 
   const proof = await page.evaluate(async (root) => {
     const resource = performance.getEntriesByType("resource").find((r) => /\/three\.js\?/.test(r.name));
     const T = await import(resource.name);
     const { Palette } = await import("/src/city/kit.ts");
-    const { createCourierModel, animateCourier } = await import("/src/courier/models.ts");
+    const { createCourierModel, animateCourier, animateHuman } = await import("/src/courier/models.ts");
     const { createGait, updateGait, gaitPose, createPose } = await import("/src/courier/gait.ts");
+    const { createHumanGait, updateHumanGait, humanPose, relaxPose } = await import("/src/courier/humanGait.ts");
+    const { createFigure, createFigureMaterial, createFigurePose, poseFigure } = await import("/src/courier/figure.ts");
+    const { createResidentAgents, residentLook } = await import("/src/city/residents.ts");
+    const { buildAnimals } = await import("/src/city/animals.ts");
     const { IllustratedComposer, illustratedEnvironment } = await import(`/@fs${root}/packages/render/dist/index.js`);
     const palette = new Palette();
     const scene = new T.Scene();
@@ -142,7 +169,8 @@ try {
     target.dispose();
     renderer.setRenderTarget(null);
     const composer = new IllustratedComposer(renderer);
-    composer.resize(512, 512);
+    renderer.setSize(1024, 1024);
+    composer.resize(1024, 1024);
     composer.setThickness(0.7);
     camera.position.set(6, 3, 7); camera.lookAt(0, 2, 1);
     composer.render(scene, camera);
@@ -156,23 +184,111 @@ try {
     portrait.add(character.group, floor);
     const pose = createPose();
     const show = (angle, mode) => {
-      if (mode === "idle") animateCourier(character, createPose(), 0, true);
+      if (character.figure) {
+        const gait = createHumanGait();
+        const figure = character.figure;
+        const speed = (mode === "walk" ? 2.7 : mode === "run" ? 11.2 : mode === "idle" || mode === "face" || mode === "blink" ? 0 : 8) * figure.pace;
+        for (let i = 0; i < 70; i += 1) updateHumanGait(gait, {
+          dt: 1 / 60, distance: speed / 60, speed, heading: 0, y: 0, reduced: false,
+          airborne: mode === "jump", scale: figure.scale, pace: figure.pace, leg: figure.leg,
+        });
+        const human = relaxPose(gait, humanPose(gait, createFigurePose(), figure.leg));
+        if (mode === "blink") human.eyes = 0.08;
+        animateHuman(character, human);
+      } else if (mode === "idle") animateCourier(character, createPose(), 0, true);
       else {
         const gait = createGait();
         for (let i = 0; i < 70; i += 1) updateGait(gait, { dt: 1 / 60, distance: 9 / 60, speed: 9, heading: 0, y: 0, reduced: false, airborne: mode === "jump" });
         animateCourier(character, gaitPose(gait, pose), 1);
       }
-      camera.position.set(Math.sin(angle) * 9, 3.7, -Math.cos(angle) * 9);
-      camera.lookAt(0, 2.5, 0);
+      const close = mode === "face" || mode === "blink";
+      const height = new T.Box3().setFromObject(character.group).max.y;
+      camera.position.set(Math.sin(angle) * (close ? 2 : 5.5), close ? height - 0.35 : height / 2 + 0.15, -Math.cos(angle) * (close ? 2 : 5.5));
+      camera.lookAt(0, close ? height - 0.45 : height / 2, 0);
       composer.render(portrait, camera);
     };
-    window.__characterProof = { show, renderer, composer, camera, scene, portrait };
+    const agents = createResidentAgents();
+    const cast = new T.Scene();
+    const people = [];
+    for (let i = 0; i < 8; i += 1) {
+      const figure = createFigure(residentLook(agents[i], i), createFigureMaterial());
+      const gait = createHumanGait();
+      updateHumanGait(gait, { dt: 1 / 60, distance: 0, speed: 0, heading: 0, y: 0, reduced: false, scale: figure.scale, pace: figure.pace, leg: figure.leg });
+      poseFigure(figure, humanPose(gait, createFigurePose(), figure.leg));
+      figure.group.position.set((i % 4 - 1.5) * 2.7, i < 4 ? 4.8 : 0, 0);
+      cast.add(figure.group);
+      people.push(figure);
+    }
+    const showCast = () => {
+      camera.position.set(0, 4.4, -17); camera.lookAt(0, 4.4, 0);
+      composer.render(cast, camera);
+    };
+    const headshot = new T.Scene();
+    const showResident = (index) => {
+      headshot.clear();
+      const person = people[index];
+      person.group.position.set(0, 0, 0);
+      headshot.add(person.group);
+      const height = new T.Box3().setFromObject(person.group).max.y;
+      camera.position.set(0.5, height - 0.35, -2.7); camera.lookAt(0, height - 0.5, 0);
+      composer.render(headshot, camera);
+    };
+    const showReferenceCast = () => {
+      show(0, "idle");
+      const duo = new T.Scene();
+      const neighbour = people[4];
+      character.group.position.set(0.85, 0, 0);
+      neighbour.group.position.set(-0.85, 0, 0);
+      duo.add(character.group, neighbour.group);
+      camera.position.set(0, 1.8, -6.1); camera.lookAt(0, 1.65, 0);
+      composer.render(duo, camera);
+    };
+    const pets = buildAnimals(palette);
+    pets.update(1.8, false);
+    const petFigures = [...pets.group.children];
+    const petScene = new T.Scene();
+    const showPets = () => {
+      petScene.clear();
+      for (const [index, pet] of petFigures.entries()) {
+        pet.visible = true;
+        pet.position.set((index - 1.5) * 2.6, 0, 0);
+        pet.rotation.y = 0.25;
+        petScene.add(pet);
+      }
+      camera.position.set(0, 2, -12); camera.lookAt(0, 0.8, 0);
+      composer.render(petScene, camera);
+    };
+    const showPet = (index) => {
+      petScene.clear();
+      const pet = petFigures[index];
+      pet.visible = true; pet.position.set(0, 0, 0); pet.rotation.y = -0.3;
+      petScene.add(pet);
+      camera.position.set(0, 1.1, -3.8); camera.lookAt(0, 0.8, 0);
+      composer.render(petScene, camera);
+    };
+    window.__characterProof = { show, showCast, showResident, showReferenceCast, showPets, showPet, renderer, composer, camera, scene, portrait };
     return { views, regression, character: { height: new T.Box3().setFromObject(character.group).getSize(new T.Vector3()).y, meshes: (() => {let n=0;character.group.traverse(o=>{if(o.isMesh)n++;});return n;})() } };
   }, process.cwd());
   await page.locator(".render-proof").screenshot({ path: `${output}/intersections.png` });
-  for (const [name, angle, pose] of [["front", 0, "idle"], ["three-quarter", 0.65, "idle"], ["rear", Math.PI - 0.45, "idle"], ["stride", 0.65, "walk"], ["jump-pose", 0.65, "jump"]]) {
+  for (const [name, angle, pose] of [["front", 0, "idle"], ["face", 0.3, "face"], ["blink", 0.3, "blink"], ["three-quarter", 0.65, "idle"], ["rear", Math.PI - 0.45, "idle"], ["stride", 0.65, "walk"], ["jog", 0.65, "jog"], ["run", 0.65, "run"], ["jump-pose", 0.65, "jump"]]) {
     await page.evaluate(({ angle, pose }) => window.__characterProof.show(angle, pose), { angle, pose });
     await page.locator(".render-proof").screenshot({ path: `${output}/character-${name}.png` });
+  }
+  if (castCheck) {
+    await page.evaluate(() => window.__characterProof.showCast());
+    await page.locator(".render-proof").screenshot({ path: `${output}/residents.png` });
+    for (const index of [0, 1, 2, 3]) {
+      await page.evaluate((index) => window.__characterProof.showResident(index), index);
+      await page.locator(".render-proof").screenshot({ path: `${output}/resident-face-${index}.png` });
+    }
+    await page.evaluate(() => window.__characterProof.showReferenceCast());
+    await page.locator(".render-proof").screenshot({ path: `${output}/reference-cast.png` });
+    await page.evaluate(() => window.__characterProof.showPets());
+    await page.locator(".render-proof").screenshot({ path: `${output}/cats-and-dogs.png` });
+    for (const index of [0, 1, 2, 3]) {
+      await page.evaluate((index) => window.__characterProof.showPet(index), index);
+      await page.locator(".render-proof").screenshot({ path: `${output}/pet-${index}.png` });
+    }
   }
   const gpu = await page.evaluate(() => { const gl = document.querySelector("canvas").getContext("webgl2"); const extension = gl?.getExtension("WEBGL_debug_renderer_info"); return extension ? gl.getParameter(extension.UNMASKED_RENDERER_WEBGL) : "unavailable"; });
   const report = { start, walked, ...proof, motion, gpu, errors };
@@ -183,5 +299,10 @@ try {
   if (Math.hypot(...start.courier.position.map((n, i) => n - walked.courier.position[i])) < 1) throw new Error("Character did not walk");
   console.log(`Character + four rendered intersection views verified; ${proof.views.reduce((n, view) => n + view.samples, 0)} visible-surface samples matched nearest geometry.`);
 } finally {
+  if (motionCheck) {
+    const video = page.video();
+    await page.close();
+    if (video) await video.saveAs(`${output}/movement.webm`);
+  }
   await browser.close();
 }

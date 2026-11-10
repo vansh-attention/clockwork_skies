@@ -64,6 +64,13 @@ describe("world materials", () => {
     expect(defaults.idShift).toEqual([0]);
   });
 
+  it("limits the soft ink wash to explicitly selected world characters", () => {
+    const soft = createIllustratedMaterial({ color: "#ffffff", lighting: "world", character: true, softCharacter: true, vertexColors: true });
+    expect(defines(soft)).toContain("ILLUSTRATED_SOFT_CHARACTER");
+    expect(defines(createIllustratedMaterial({ color: "#ffffff", lighting: "world", softCharacter: true }))).not.toContain("ILLUSTRATED_SOFT_CHARACTER");
+    expect(defines(createIllustratedMaterial({ color: "#ffffff", character: true, softCharacter: true }))).not.toContain("ILLUSTRATED_SOFT_CHARACTER");
+  });
+
   it("share the sky light, cut and highlight, which reset with the rest of the environment", () => {
     const material = createIllustratedMaterial({ color: "#ffffff", lighting: "world", pattern: "render", inkPatches: true });
     expect(material.uniforms.uSkyLight).toBe(illustratedEnvironment.uSkyLight);

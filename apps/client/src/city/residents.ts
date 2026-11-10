@@ -4,7 +4,7 @@ import { createHillTownWalkWorld, type WalkWorld } from "../courier/walkWorld";
 import { DISTRICTS } from "./districts";
 import { bearingOf, createCityLayout, polarToXZ, STREET, TERRACES, type CityLayout, type Landmark } from "./layout";
 import { seededSequence, type MaterialSource } from "./kit";
-import { createFigure, createFigureMaterial, createFigurePose, poseFigure, type Figure, type FigureLook, type FigurePose } from "../courier/figure";
+import { animateFigureExpression, createFigure, createFigureMaterial, createFigurePose, poseFigure, type Figure, type FigureLook, type FigurePose } from "../courier/figure";
 import { createHumanGait, humanPose, updateHumanGait, type HumanGait } from "../courier/humanGait";
 import { landmarkPoint } from "./londonSolids";
 import { nearestOnPolyline, type LondonPlan } from "./londonPlan";
@@ -280,28 +280,41 @@ export function easedProgress(t: number, duration: number): number {
   return top * (t - ease / 2);
 }
 
-/** Everyday London dress, mixed per resident from a seeded hand: coats, trousers, hair and skin of many tones. */
-const SKINS = ["#f1caa9", "#e3b493", "#cf9b77", "#b07a57", "#8a5a3c", "#6a4129"] as const;
-const HAIRS = ["#2e2420", "#4a3426", "#6b4a32", "#9a7a55", "#b5aea2", "#1f1c1b", "#8a3f2a"] as const;
-const COATS: readonly (readonly [jacket: string, trim: string])[] = [
-  ["#3c4b63", "#2e3a4d"], ["#a8865a", "#8a6c46"], ["#4e5458", "#3c4144"], ["#5f6b45", "#4b5536"],
-  ["#7c3f42", "#633235"], ["#2f5a5e", "#244749"], ["#b9a789", "#9a8a6f"], ["#c36a44", "#a3573a"],
+/** The reference's slender anatomy under relaxed green, salmon and cream knits and softly fitted blue denim. */
+const SKINS = ["#f1cbb5", "#e5b79a", "#d09e7b", "#b98161", "#916046", "#704a38"] as const;
+const HAIRS = ["#262629", "#302b29", "#3b302c", "#4b3931", "#5b4638", "#685345"] as const;
+const TOPS: readonly (readonly [cloth: string, ribbing: string])[] = [
+  ["#a4c994", "#87aa7b"], ["#97bd8e", "#7c9f78"], ["#d09a83", "#b78270"],
+  ["#dca993", "#bd8b78"], ["#e7dfc9", "#c6bda7"], ["#d7d3bd", "#b8b39f"],
 ] as const;
-const TROUSERS = ["#2d3236", "#3a4a5e", "#5c5248", "#2f3f3a", "#6d6a62", "#1f2a33"] as const;
-const SHOES = ["#2a2422", "#3b2c27", "#4a4038", "#1d1d1f"] as const;
-const CAPS = ["#5b5d61", "#4a4136", "#3a4450"] as const;
+const TROUSERS = ["#64748e", "#6e7e96", "#5e6e88", "#74819a", "#63718b", "#718096"] as const;
+const SHOES = ["#e8e2d3", "#ded7c5", "#ece6d8", "#d7cdb8"] as const;
+export type ResidentIdentity = Readonly<{ gender: "woman" | "man"; age: "young" | "adult" | "older"; garment: "hoodie" | "cardigan" }>;
 
+/** Appearance only: the seeded routes, sizes, walking pace and avoidance are unchanged. */
+export function residentIdentity(_agent: ResidentAgent, index: number): ResidentIdentity {
+  const age = index % 8 === 0 || index % 8 === 5 ? "older" : index % 3 === 0 ? "young" : "adult";
+  return { gender: index % 4 < 2 ? "woman" : "man", age, garment: index % 2 === 0 ? "cardigan" : "hoodie" };
+}
 export function residentLook(agent: ResidentAgent, index: number): FigureLook {
   const random = seededSequence(index * 7919 + agent.district * 104729 + 0x5ca1e);
   const pick = <T>(list: readonly T[]) => list[Math.floor(random() * list.length) % list.length]!;
-  const [jacket, trim] = COATS[(agent.coat * 3 + Math.floor(random() * 3) + index) % COATS.length]!;
-  const hairStyle = (["short", "bob", "bun"] as const)[Math.floor(random() * 3)]!;
+  const identity = residentIdentity(agent, index);
+  const [jacket, ribbing] = TOPS[(Math.floor(index / 2) + agent.district) % TOPS.length]!;
   return {
     scale: agent.scale * 0.97,
-    build: 0.9 + random() * 0.2,
-    skin: pick(SKINS), hair: pick(HAIRS), hairStyle,
-    jacket, trim, trousers: pick(TROUSERS), socks: "#d9d3c4", shoes: pick(SHOES),
-    cap: agent.cap && hairStyle === "short" ? pick(CAPS) : undefined,
+    build: identity.gender === "woman" ? 0.82 + random() * 0.08 : 0.87 + random() * 0.09,
+    head: identity.age === "young" ? 1.12 : identity.age === "older" ? 1.04 : 1.08,
+    face: "anime", iris: pick(["#514638", "#5f594c", "#68523e", "#454a43"]),
+    expression: identity.age === "older" ? "calm" : index % 3 === 0 ? "bright" : "gentle", age: identity.age,
+    skin: pick(SKINS), hair: identity.age === "older" ? pick(["#514b47", "#62594f", "#4e4a48"]) : pick(HAIRS),
+    // The shared layered style starts at a medium jaw/nape shag; vary its wispy length without long curtains.
+    hairStyle: "layered", hairLength: identity.gender === "woman" ? 1.1 + random() * 0.3 : 1 + random() * 0.3, fringe: true,
+    limbs: 0.75 + random() * 0.11, hands: 0.74 + random() * 0.08,
+    garment: identity.garment, fit: 1.03 + random() * 0.09, longTop: true, trouserFit: 1.04 + random() * 0.08,
+    jacket, trim: identity.garment === "cardigan" ? "#3d3937" : ribbing,
+    shirt: "#b3b1ac", legs: "trousers", trousers: pick(TROUSERS), socks: "#e8e2d3", shoes: pick(SHOES),
+    pockets: false,
   };
 }
 
@@ -319,8 +332,10 @@ export function buildResidents(_palette: MaterialSource, layout: CityLayout = cr
   // never sink into a road or a kerb as a route crosses them.
   const world = createHillTownWalkWorld(layout);
   const people = agents.map((agent, index) => {
-    const figure: Figure = createFigure(residentLook(agent, index), material);
+    const look = residentLook(agent, index);
+    const figure: Figure = createFigure(look, material);
     figure.group.name = agent.id;
+    figure.group.userData = { ...residentIdentity(agent, index), hairStyle: look.hairStyle, skin: look.skin, jacket: look.jacket };
     figure.mesh.boundingSphere = FIGURE_BOUNDS.clone();
     figure.mesh.frustumCulled = true;
     group.add(figure.group);
@@ -371,7 +386,12 @@ export function buildResidents(_palette: MaterialSource, layout: CityLayout = cr
         dt: dt > 0 ? dt : 1 / 60, distance: stepping ? distance : 0, speed: stepping && dt > 0 ? distance / dt : 0,
         heading: person.heading, y, reduced, scale: figure.scale, pace: figure.pace, leg: figure.leg,
       });
-      poseFigure(figure, humanPose(gait, pose, figure.leg));
+      // Independent scene-clock phases prevent the whole crowd breathing and blinking in unison.
+      gait.time = t + agent.phase;
+      const drawnPose = humanPose(gait, pose, figure.leg);
+      drawnPose.eyes = 1; // the shared face helper owns the staggered blink, rather than combining two blink clocks
+      poseFigure(figure, drawnPose);
+      animateFigureExpression(figure, t, reduced, agent.phase);
     }
   }
   update(0, false);

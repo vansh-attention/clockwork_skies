@@ -48,14 +48,15 @@ const WALK_KEYS: GaitKeys = {
  * one cycle every 0.87 s (138 steps a minute) at 2.11 of her heights a second; short legs reach far. Carried as
  * the reference's character runs (probe-right.png): leaning into it, the arms bent and close rather than reaching out
  * in front, and the trailing heel kicking up behind. The stance keys (the first third) set the planted foot and stride
- * and are as fitted.
+ * and are as fitted. The 2026-11-10 full-cycle skeletal comparison lowers the old exaggerated thigh lift,
+ * shortens contact to preserve the 0.871-second rhythm, and lets the elbows flex in both directions.
  */
 const JOG_KEYS: GaitKeys = {
-  hip: [42, 23, 2, -27, -19, 6, 36, 53, 55, 49],
-  knee: [30, 48, 42, 34, 56, 96, 118, 108, 72, 34],
+  hip: [30, 8, -22, -18, -8, 10, 24, 36, 38, 34],
+  knee: [16, 36, 20, 28, 50, 80, 112, 118, 80, 35],
   ankle: [6, 16, 12, -14, -22, -10, 0, 8, 10, 8],
-  stance: 0.34, lean: 17, pelvisYaw: 8, pelvisRoll: 3, sway: 0.02, counter: 0.8,
-  armSwing: 0.45, armBias: 2, elbow: 95, elbowSwing: 8, armOut: 9, float: 0.05,
+  stance: 0.2313, lean: 21.5, pelvisYaw: 8, pelvisRoll: 3, sway: 0.02, counter: 0.8,
+  armSwing: 0.45, armBias: 2, elbow: 99, elbowSwing: 24, armOut: 9, float: 0.05,
 };
 
 /**
@@ -65,11 +66,11 @@ const JOG_KEYS: GaitKeys = {
  */
 const RUN_KEYS: GaitKeys = {
   // The hip drives back early through a short stance; the knee is a little bent and the foot near flat at landing.
-  hip: [60, 28, -11, -38, -27, 13, 60, 85, 88, 74],
-  knee: [30, 42, 32, 28, 64, 104, 124, 118, 82, 42],
+  hip: [38, 10, -27, -22, -10, 12, 29, 43, 46, 41],
+  knee: [17, 36, 20, 28, 50, 84, 112, 116, 78, 34],
   ankle: [2, 16, 12, -18, -26, -10, 2, 10, 12, 6],
-  stance: 0.26, lean: 18, pelvisYaw: 10, pelvisRoll: 2.5, sway: 0.015, counter: 0.9,
-  armSwing: 0.62, armBias: 6, elbow: 100, elbowSwing: 8, armOut: 11, float: 0.1,
+  stance: 0.1585, lean: 29.5, pelvisYaw: 10, pelvisRoll: 2.5, sway: 0.015, counter: 0.9,
+  armSwing: 0.5, armBias: 4, elbow: 91, elbowSwing: 20, armOut: 11, float: 0.06,
 };
 
 /** Periodic Catmull-Rom through evenly spaced keys (u in cycles, any value). */
@@ -438,7 +439,7 @@ export function humanPose(gait: HumanGait, out: FigurePose = createFigurePose(),
     const ownHip = blendTable((g) => g.hip, u + i * 0.5) / DEG;
     const meanHip = (blendTable((g) => g.hip, u) + blendTable((g) => g.hip, u + 0.5)) / 2 / DEG;
     const swingDeg = bias - swing * (ownHip - meanHip);
-    const forward = Math.max(0, swingDeg - bias) / 30;
+    const forward = (swingDeg - bias) / 30;
     const arm = out.arms[i]!;
     const idleSwing = 0.03 + 0.02 * Math.sin(t * 0.8 + i * 1.7);
     arm.swing = lerp(idleSwing, swingDeg * DEG, move);

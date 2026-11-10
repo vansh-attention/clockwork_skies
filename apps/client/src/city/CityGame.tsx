@@ -136,7 +136,7 @@ export function CityGame() {
 
   const district = focused === null ? null : DISTRICTS[focused] ?? null;
   const announcement = mode === "title" ? "" : mode === "play"
-    ? "Walking around Little London. WASD to move, drag to look, Escape for the guide."
+    ? "Walking around Little Islands. WASD to move, drag to look, Escape for the guide."
     : district ? `Now viewing ${district.name}. ${districtLocation(district)}.` : "Viewing the whole town.";
   const setMotion = (value: boolean) => {
     setReducedMotion(value);
@@ -148,8 +148,8 @@ export function CityGame() {
     <div className="game-canvas" ref={mount} />
 
     {mode === "title" && <section className="title-screen" aria-labelledby="game-title">
-      <div className="title-kicker"><span>A SMALL ISLAND. A LITTLE LONDON.</span><i /></div>
-      <h1 id="game-title"><span>LITTLE</span><em>LONDON</em></h1>
+      <div className="title-kicker"><span>A SMALL ISLAND. A LITTLE ESCAPE.</span><i /></div>
+      <h1 id="game-title"><span>LITTLE</span><em>ISLANDS</em></h1>
       <p>Brick lanes, corner shops and a river by the sea.<br />A painted little island, yours to wander.</p>
       <div className="launch-card city-card">
         <div className="form-heading"><span>COME ON IN</span><strong className="city-time">↗</strong></div>
@@ -165,7 +165,7 @@ export function CityGame() {
 
     {mode === "explore" && <>
       <header className="flight-header city-header">
-        <div className="wordmark"><span className="mark" aria-hidden="true">L</span><strong>LITTLE LONDON</strong></div>
+        <div className="wordmark"><span className="mark" aria-hidden="true">L</span><strong>LITTLE ISLANDS</strong></div>
         <div className="phase"><span>{district ? district.name : "OVERVIEW"}</span><b>{time}</b></div>
         <button onClick={openGuide} aria-expanded={guideOpen}>GUIDE</button>
       </header>

@@ -4,9 +4,9 @@ import { CityGame } from "./CityGame";
 
 it("opens on a compact London island with walking and overview controls", () => {
   const html = renderToStaticMarkup(<CityGame />);
-  expect(html).toContain("A SMALL ISLAND. A LITTLE LONDON.");
+  expect(html).toContain("A SMALL ISLAND. A LITTLE ESCAPE.");
   expect(html).not.toContain("CLOCKWORK");
-  expect(html).toContain("LONDON");
+  expect(html).toContain("ISLANDS");
   expect(html).toContain("TAKE A WALK");
   expect(html).toContain("VIEW THE ISLAND");
   expect(html).toContain("A painted little island, yours to wander.");
