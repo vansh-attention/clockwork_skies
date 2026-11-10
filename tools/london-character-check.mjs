@@ -6,6 +6,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 // Run against the local Vite server: node tools/london-character-check.mjs [URL]
 const motionCheck = process.argv.includes("--motion");
 const castCheck = process.argv.includes("--cast");
+const referenceStudy = process.argv.includes("--reference-study");
 const native = process.argv.includes("--native");
 const outputArg = process.argv.indexOf("--output");
 const output = outputArg >= 0 ? process.argv[outputArg + 1] : castCheck ? "artifacts/anime-cast" : motionCheck ? "artifacts/cute-courier-motion" : "artifacts/character-intersections";
@@ -16,6 +17,22 @@ const errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
 try {
+  if (referenceStudy) {
+    page.on("response", (response) => { if (response.status() >= 400) errors.push(`HTTP ${response.status()} ${response.url()}`); });
+    await page.goto(`http://127.0.0.1:5173/@fs${process.cwd()}/artifacts/messenger-right/mesh-study.html`);
+    await page.waitForFunction(() => window.__referenceStudyReady, { timeout: 30000 });
+    await page.evaluate(() => window.__referenceStudy.show({ face: true }));
+    await page.locator("#canvas").screenshot({ path: `${output}/reference-face.png` });
+    for (const kind of ["hair", "top", "bottom", "shoes"]) {
+      await page.evaluate((kind) => window.__referenceStudy.grid(kind), kind);
+      await page.locator("#grid").screenshot({ path: `${output}/reference-${kind}.png` });
+    }
+    await page.evaluate(() => window.__referenceStudy.show({ face: false }));
+    await page.locator("#canvas").screenshot({ path: `${output}/reference-body.png` });
+    await writeFile(`${output}/report.json`, JSON.stringify({ errors, study: true }, null, 2));
+    if (errors.length) throw new Error(errors.join("; "));
+    console.log("Reference face and all 31 decoded accessory meshes rendered without captured errors.");
+  } else {
   await page.goto(process.argv.slice(2).find((arg) => arg.startsWith("http")) ?? "http://127.0.0.1:5173/?debug=1");
   await page.getByRole("button", { name: /TAKE A WALK/ }).click();
   await page.waitForFunction(() => JSON.parse(window.render_game_to_text()).courier?.mode === "walk");
@@ -298,6 +315,7 @@ try {
   if (errors.length) throw new Error(`Browser errors: ${errors.join("; ")}`);
   if (Math.hypot(...start.courier.position.map((n, i) => n - walked.courier.position[i])) < 1) throw new Error("Character did not walk");
   console.log(`Character + four rendered intersection views verified; ${proof.views.reduce((n, view) => n + view.samples, 0)} visible-surface samples matched nearest geometry.`);
+  }
 } finally {
   if (motionCheck) {
     const video = page.video();

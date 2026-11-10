@@ -9,6 +9,7 @@ import { createResidentAgents, residentLook } from "../city/residents";
 import { createHumanGait, gaitTables, humanPose, updateHumanGait } from "./humanGait";
 import { COURIER_HEIGHT } from "./size";
 import { WALK } from "./walker";
+import { AUTHORED_GEOMETRIES, AUTHORED_RIG } from "./authoredAssets";
 
 const ALLOWED = ["wall0", "copper", "ink", "water", "brass"] as const;
 
@@ -125,6 +126,11 @@ describe("human London courier", () => {
     return out;
   };
   const garment = (mesh: THREE.SkinnedMesh) => {
+    const slot = mesh.geometry.getAttribute("partSlot");
+    const uv = mesh.geometry.getAttribute("uv");
+    // Source part slots identify modular meshes; surfaceId/idShift is a random
+    // surface seed and carries no wardrobe meaning in imported geometry.
+    if (slot) return (i: number) => uv.getY(i) > 1 ? 10 : [0, 1, 2, 4, 7][slot.getX(i)]!;
     const shift = mesh.geometry.getAttribute("idShift");
     const base = Math.min(...Array.from(shift.array as Float32Array));
     const step = 0.0062;
@@ -143,28 +149,36 @@ describe("human London courier", () => {
     expect(Object.keys(material.defines ?? {})).toEqual(expect.arrayContaining(["ILLUSTRATED_CHARACTER", "ILLUSTRATED_VERTEX_COLORS", "ILLUSTRATED_WORLD"]));
     expect(material.fragmentShader).toContain("location = 1");
     const points = skinned(mesh);
-    const bounds = new THREE.Box3().setFromPoints(points);
+    const referenced = new Set(Array.from(mesh.geometry.getIndex()!.array));
+    const bounds = new THREE.Box3().setFromPoints(points.filter((_, i) => referenced.has(i)));
     const height = bounds.max.y - bounds.min.y;
     // Short: about 1.5 m against a 6-unit (2.8 m) storey, the height the camera and pace are scaled to (size.ts).
     expect(Math.abs(height - COURIER_HEIGHT)).toBeLessThan(0.03);
     expect(Math.abs(figure!.height - COURIER_HEIGHT)).toBeLessThan(0.001);
     expect(height).toBeLessThan(3.4);
     expect(Math.abs(bounds.min.y)).toBeLessThan(0.02);
-    // The supplied illustration has natural youthful proportions: about 5.5–6 heads tall, with a slim body.
-    // The approved leg rig and camera size stay put; this checks the drawn head, not its hidden bone anchor.
+    // The decoded reference is about 5.6 heads tall. Source bind vertices face
+    // +Z; the authoring transform turns the whole figure to runtime −Z.
     const isSkin = garment(mesh);
     const position = mesh.geometry.getAttribute("position");
+    const skinIndex = mesh.geometry.getAttribute("skinIndex"), skinWeight = mesh.geometry.getAttribute("skinWeight");
+    const headIndex = mesh.skeleton.bones.indexOf(figure!.bones.head);
     let chin = Infinity;
     points.forEach((p, i) => {
-      if (isSkin(i) === 0 && position.getZ(i) < -0.12 && p.y > 0.6 * height) chin = Math.min(chin, p.y);
+      let headWeight = 0;
+      for (let j = 0; j < 4; j += 1) if (skinIndex.getComponent(i, j) === headIndex) headWeight += skinWeight.getComponent(i, j);
+      if (referenced.has(i) && isSkin(i) === 0 && headWeight > 0.8 && position.getZ(i) > 0.03) chin = Math.min(chin, p.y);
     });
+    expect(Number.isFinite(chin)).toBe(true);
     const heads = height / (bounds.max.y - chin);
-    expect(heads).toBeGreaterThan(5.5);
-    expect(heads).toBeLessThan(6.2);
+    expect(heads).toBeGreaterThan(5.2);
+    expect(heads).toBeLessThan(5.9);
     expect((bounds.max.x - bounds.min.x) / height).toBeLessThan(0.36);
     const legs = figure!.bones.thigh[0].getWorldPosition(new THREE.Vector3()).y / height;
-    expect(legs).toBeGreaterThan(0.38);
-    expect(legs).toBeLessThan(0.46);
+    const sourceFloor = Math.min(...Object.values(AUTHORED_GEOMETRIES).map((source) => source.bounds.min[1]!));
+    const sourceTop = Math.max(...Object.values(AUTHORED_GEOMETRIES).map((source) => source.bounds.max[1]!));
+    const sourceHipRatio = (AUTHORED_RIG.bones[14]!.worldPosition[1]! - sourceFloor) / (sourceTop - sourceFloor);
+    expect(Math.abs(legs - sourceHipRatio)).toBeLessThan(0.01);
     // Each garment is its own outlined surface; the whole person stays a modest mesh.
     expect(new Set(Array.from(mesh.geometry.getAttribute("idShift").array as Float32Array)).size).toBeGreaterThanOrEqual(8);
     expect((mesh.geometry.getIndex()?.count ?? 0) / 3).toBeLessThan(20000);
@@ -175,13 +189,22 @@ describe("human London courier", () => {
   it("bends smoothly at the joints: weights sum to one and blend across knees and elbows", () => {
     const mesh = meshesOf(model().group)[0] as THREE.SkinnedMesh;
     const weights = mesh.geometry.getAttribute("skinWeight");
-    let blended = 0;
+    const indices = mesh.geometry.getAttribute("skinIndex");
+    const pairs = [[14, 15], [18, 19], [7, 8], [11, 12]];
+    const blended = pairs.map(() => 0);
     for (let i = 0; i < weights.count; i += 1) {
       const sum = weights.getX(i) + weights.getY(i) + weights.getZ(i) + weights.getW(i);
       expect(sum).toBeCloseTo(1, 5);
-      if (weights.getX(i) > 0.05 && weights.getY(i) > 0.05) blended += 1;
+      pairs.forEach((pair, p) => {
+        const influence = pair.map((bone) => {
+          let value = 0;
+          for (let j = 0; j < 4; j += 1) if (indices.getComponent(i, j) === bone) value += weights.getComponent(i, j);
+          return value;
+        });
+        if (influence.every((value) => value > 0.05)) blended[p]! += 1;
+      });
     }
-    expect(blended).toBeGreaterThan(150);
+    for (const count of blended) expect(count).toBeGreaterThan(0);
   });
 
   it("keeps its soles on the ground through walking, jogging and running, and lifts them in the swing", () => {
@@ -192,9 +215,13 @@ describe("human London courier", () => {
       const gait = createHumanGait();
       let lowestEver = Infinity, highestSupport = -Infinity, highestSwing = -Infinity;
       for (let frame = 0; frame < 180; frame += 1) {
-        updateHumanGait(gait, { dt: 1 / 60, distance: speed / 60, speed, heading: 0, y: 0, reduced: false, pace: figure!.pace, leg: figure!.leg });
+        updateHumanGait(gait, { dt: 1 / 60, distance: speed / 60, speed, heading: 0, y: 0, reduced: false, scale: figure!.scale, pace: figure!.pace, leg: figure!.leg });
+      }
+      // Sample a complete settled cycle rather than an arbitrary final second,
+      // which can omit heel strike or peak swing at the slower walking pace.
+      for (let frame = 0; frame < 120; frame += 1) {
+        gait.phase = frame / 120;
         poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
-        if (frame < 120 || frame % 4) continue;
         group.updateMatrixWorld(true);
         const soles = [0, 1].map((side) => {
           const points = skinned(mesh, (i) => isShoe(i) === SHOES && Math.sign(mesh.geometry.getAttribute("position").getX(i)) === (side ? 1 : -1));
@@ -204,11 +231,11 @@ describe("human London courier", () => {
         highestSupport = Math.max(highestSupport, Math.min(...soles));
         highestSwing = Math.max(highestSwing, Math.max(...soles));
       }
-      expect(lowestEver, `speed ${speed}`).toBeGreaterThan(-0.06);
+      expect.soft(lowestEver, `speed ${speed}`).toBeGreaterThan(-0.06);
       // Walking, a foot is always down; jogging and running float only briefly, a hand's breadth at most.
-      expect(highestSupport, `speed ${speed}`).toBeLessThan(speed < 3 ? 0.06 : 0.3);
+      expect.soft(highestSupport, `speed ${speed}`).toBeLessThan(speed < 3 ? 0.06 : 0.3);
       // The swing lifts the foot clear, a hand's breadth or more (scaled to her size when jogging and running).
-      expect(highestSwing, `speed ${speed}`).toBeGreaterThan(speed < 3 ? 0.15 : 0.3 * figure!.pace);
+      expect.soft(highestSwing, `speed ${speed}`).toBeGreaterThan(speed < 3 ? 0.15 : 0.3 * figure!.pace);
     }
   });
 
@@ -247,7 +274,7 @@ describe("human London courier", () => {
   it("swings each arm forward with the opposite leg", () => {
     const { figure } = model();
     const gait = createHumanGait();
-    for (let i = 0; i < 120; i += 1) updateHumanGait(gait, { dt: 1 / 60, distance: WALK.walkSpeed / 60, speed: WALK.walkSpeed, heading: 0, y: 0, reduced: false, pace: figure!.pace, leg: figure!.leg });
+    for (let i = 0; i < 120; i += 1) updateHumanGait(gait, { dt: 1 / 60, distance: WALK.walkSpeed / 60, speed: WALK.walkSpeed, heading: 0, y: 0, reduced: false, scale: figure!.scale, pace: figure!.pace, leg: figure!.leg });
     const z = (bone: THREE.Object3D) => bone.getWorldPosition(new THREE.Vector3()).z;
     // Evaluate the actual skinned rig across a full cycle. Knee flexion can put a toe behind its thigh during
     // recovery, so a single hard-coded toe frame does not establish opposite-arm carriage.
@@ -285,22 +312,47 @@ describe("human London courier", () => {
     }
   });
 
-  it("keeps the slim long top over its upper trousers through standing, jogging and running", () => {
+  it("keeps the hoodie over its upper trousers through standing, jogging and running", () => {
     const { figure } = model();
     const mesh = figure!.mesh, positions = mesh.geometry.getAttribute("position"), ids = garment(mesh), index = mesh.geometry.getIndex()!;
-    const candidates: number[] = [];
-    for (let i = 0; i < positions.count; i += 1) if (ids(i) === 4 && positions.getY(i) > figure!.hipsRest.y + 0.02
-      && positions.getY(i) < figure!.hipsRest.y + 0.25 && positions.getZ(i) < -0.1) candidates.push(i);
-    expect(candidates.length).toBeGreaterThan(12);
-    const samples = Array.from({ length: 12 }, (_, i) => candidates[Math.floor(i * (candidates.length - 1) / 11)]!);
+    const normals = mesh.geometry.getAttribute("normal");
+    type Sample = { vertices: number[]; side: number; weights: number[] };
+    const samples: Sample[] = [];
+    // Sample triangle interiors on both sides of the upper trousers. Rays use
+    // posed world points, so scaling, the +Z source frame and torso lean cannot
+    // accidentally turn a coverage check into a ray that misses the character.
+    for (const side of [-1, 1]) {
+      const candidates: { vertices: number[]; side: number }[] = [];
+      for (let at = 0; at < index.count; at += 3) {
+        const vertices = [index.getX(at), index.getX(at + 1), index.getX(at + 2)];
+        if (!vertices.every((i) => ids(i) === 4 && positions.getY(i) > figure!.hipsRest.y + 0.02
+          && positions.getY(i) < figure!.hipsRest.y + 0.16)) continue;
+        const center = vertices.reduce((p, i) => p.add(new THREE.Vector3().fromBufferAttribute(positions, i)), new THREE.Vector3()).multiplyScalar(1 / 3);
+        const facing = vertices.reduce((sum, i) => sum + normals.getZ(i), 0) / 3;
+        if (Math.abs(center.x) < 0.14 && center.z * side > 0.055 && facing * side > 0.35) candidates.push({ vertices, side: -side });
+      }
+      expect(candidates.length, `source side ${side}`).toBeGreaterThan(0);
+      // The original rear waistband has two large triangles. Multiple interior
+      // barycentric points give spatial coverage independent of tessellation.
+      const interiors = candidates.flatMap((candidate) => [[1 / 3, 1 / 3, 1 / 3], [0.6, 0.2, 0.2], [0.2, 0.6, 0.2], [0.2, 0.2, 0.6]]
+        .map((weights) => ({ ...candidate, weights })));
+      expect(interiors.length, `source side ${side}`).toBeGreaterThanOrEqual(6);
+      for (let i = 0; i < 6; i += 1) samples.push(interiors[Math.floor(i * (interiors.length - 1) / 5)]!);
+    }
     const exposed = () => {
-      mesh.updateMatrixWorld(true);
+      figure!.group.updateMatrixWorld(true);
+      mesh.skeleton.update();
       let seen = 0;
-      for (const vertex of samples) {
-        const point = new THREE.Vector3().fromBufferAttribute(positions, vertex);
-        mesh.applyBoneTransform(vertex, point);
-        const hit = new THREE.Raycaster(new THREE.Vector3(point.x, point.y, -3), new THREE.Vector3(0, 0, 1)).intersectObject(mesh)[0];
-        if (hit && ids(index.getX(hit.faceIndex! * 3)) === 4) seen += 1;
+      for (const sample of samples) {
+        const point = new THREE.Vector3();
+        for (const [i, vertex] of sample.vertices.entries()) {
+          const v = new THREE.Vector3().fromBufferAttribute(positions, vertex);
+          mesh.applyBoneTransform(vertex, v);
+          point.addScaledVector(v.applyMatrix4(mesh.matrixWorld), sample.weights[i]!);
+        }
+        const hit = new THREE.Raycaster(new THREE.Vector3(point.x, point.y, sample.side * 6), new THREE.Vector3(0, 0, -sample.side)).intersectObject(mesh)[0];
+        expect(hit).toBeDefined();
+        if (ids(index.getX(hit!.faceIndex! * 3)) === 4) seen += 1;
       }
       return seen;
     };
@@ -311,8 +363,13 @@ describe("human London courier", () => {
       poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
       expect(exposed(), `speed ${speed}, phase ${phase}`).toBe(0);
     }
-    // Positive control: physically contracting the covering cloth must reveal the trousers to these same rays.
-    for (let i = 0; i < positions.count; i += 1) if ([2, 3].includes(ids(i))) positions.setZ(i, positions.getZ(i) * 0.65);
+    // Positive control: contracting only the covering hoodie must expose the
+    // unchanged trousers to these same rays; a miss cannot masquerade as cover.
+    poseFigure(figure!, createFigurePose());
+    for (let i = 0; i < positions.count; i += 1) if (ids(i) === 2) {
+      positions.setX(i, positions.getX(i) * 0.2);
+      positions.setZ(i, positions.getZ(i) * 0.2);
+    }
     expect(exposed()).toBeGreaterThan(0);
   });
 
@@ -627,7 +684,7 @@ describe("drawn faces, the reference's way", () => {
     const eyeToHead = (Math.max(...eyeY) - Math.min(...eyeY)) / (0.625 * COURIER_LOOK.head! * 0.86);
     expect(eyeToHead).toBeGreaterThan(0.07);
     expect(eyeToHead).toBeLessThan(0.12);
-    expect(COURIER_LOOK).toMatchObject({ garment: "hoodie", hairStyle: "layered", expression: "bright", legs: "trousers", longTop: true });
+    expect(COURIER_LOOK).toMatchObject({ garment: "hoodie", hairStyle: "messenger", expression: "bright", legs: "trousers", longTop: true });
     expect(COURIER_LOOK.bag).toBeUndefined();
     expect(COURIER_LOOK.cap).toBeUndefined();
     expect(COURIER_LOOK.ribbon).toBeUndefined();

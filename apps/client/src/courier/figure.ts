@@ -19,7 +19,7 @@ export type FigureLook = Readonly<{
   skin: string;
   hair: string;
   /** "long": a bob's shell with long hair down the back and locks framing the face. */
-  hairStyle?: "short" | "bob" | "bun" | "long" | "layered";
+  hairStyle?: "short" | "bob" | "bun" | "long" | "layered" | "messenger";
   /** Layered side/cheek/nape length: 1 short, 1.5–1.8 softly shaggy at the neck/shoulders. Crown stays fixed. */
   hairLength?: number;
   jacket: string;
@@ -92,11 +92,11 @@ export type FigureLook = Readonly<{
  * and pale canvas sneakers. The existing rig/stature keeps the approved movement and framing.
  */
 export const COURIER_LOOK: FigureLook = {
-  head: 1.08, face: "anime", iris: "#624b3c", expression: "bright", age: "young",
-  build: 0.88, limbs: 0.8, hands: 0.82, feet: 0.9, stature: { legs: 0.74, trunk: 0.90682 },
-  skin: "#fff1e9", hair: "#191a1b", hairStyle: "layered", hairLength: 1.2, fringe: true,
+  head: 1.16, face: "anime", iris: "#45413e", expression: "bright", age: "young",
+  build: 0.88, limbs: 0.8, hands: 0.82, feet: 0.9, stature: { legs: 0.74, trunk: 0.90306274 },
+  skin: "#fff1e9", hair: "#151617", hairStyle: "messenger", hairLength: 1, fringe: true,
   garment: "hoodie", fit: 1.1, pockets: false, trouserFit: 1.11, longTop: true,
-  jacket: "#9fd790", trim: "#96cb87", shirt: "#e5e7df", legs: "trousers", trousers: "#7287ab", socks: "#f7f4ed", shoes: "#f5f0df",
+  jacket: "#9ed68b", trim: "#91c87e", shirt: "#f4f1e8", legs: "trousers", trousers: "#7287ab", socks: "#f7f4ed", shoes: "#f5f0df",
 };
 
 /** Base proportions (scale 1). Joint positions are in the figure's own space. */
@@ -119,6 +119,12 @@ const headDrop = (size: number) => (size - 1) * HEAD_SPAN;
 /** The leg's dimensions, which the gait needs to keep a planted foot on the ground. */
 export type LegDimensions = Readonly<{
   hip: number; thigh: number; shin: number; ankle: number;
+  /** Optional measured stride per full cycle, in this rig's unscaled units. Joint arcs are fitted to it. */
+  strideTargets?: Readonly<{ walk?: number; jog?: number; run?: number }>;
+  /** Translation effects expressed in the original gait's units, converted to this rig's bind-space units. */
+  translationScale?: number;
+  /** Extra knee flexion in the walking swing, radians; leaves the planted stance and stride unchanged. */
+  walkKneeLift?: number;
   /** Sole points relative to the ankle, along forward (+) and up (+): heel, ball, toe tip. */
   sole: readonly (readonly [forward: number, up: number])[];
 }>;
@@ -158,6 +164,8 @@ export type Figure = {
   /** Expression helper restores these offsets each frame, so gaze never accumulates drift. */
   eyesRest: THREE.Vector3;
   expression: NonNullable<FigureLook["expression"]>;
+  /** Imported skeletons adapt the shared gait's pose to their authored bind axes. */
+  applyAuthoredPose?: (pose: FigurePose) => void;
 };
 
 /** Where outlined garments start in surface-id space (each garment adds a step; scenery stays well below). */
@@ -455,7 +463,11 @@ function addLeg(builder: FigureBuilder, look: FigureLook, side: -1 | 1, w: numbe
       [0.54, 0.136, 0.143, [shin]],
       [0.44, 0.132, 0.139, [shin]],
     ];
-    if (loose) legRings.push([0.34, 0.141, 0.148, [shin]], [0.27, 0.127, 0.135, [shin, foot, 0.1]], [0.21, 0.12, 0.128, [shin, foot, 0.3]]);
+    if (loose) legRings.push(
+      [0.36, 0.146, 0.153, [shin]], [0.3, 0.128, 0.137, [shin, foot, 0.08]],
+      [0.245, 0.145, 0.147, [shin, foot, 0.2]], [0.175, 0.125, 0.132, [shin, foot, 0.4]],
+    );
+    const denimStart = builder.indices.length;
     builder.loft(legRings.map(([y, rx, rz, skin]) => ({ at: v(x + (loose ? side * 0.025 * Math.sin(Math.min(1, (1.8 - y) / 1.6) * Math.PI) : 0), y, 0.01), rx: rx * fit, rz: rz * fit, skin })), {
       segments: 24, garment: "trousers", color: look.trousers, wash: loose ? 0.16 : 0,
       deform: loose ? (point, ring, angle) => {
@@ -466,6 +478,48 @@ function addLeg(builder: FigureBuilder, look: FigureLook, side: -1 | 1, w: numbe
         return point;
       } : undefined,
     });
+    if (loose) {
+      // Ink follows the actual folded denim, including its skin weights. A few unequal creases describe the
+      // knee and fabric stacking over the sneaker; random all-over lines would obscure the silhouette.
+      const triangles: THREE.Triangle[] = [];
+      const at = (i: number) => v(builder.positions[i * 3]!, builder.positions[i * 3 + 1]!, builder.positions[i * 3 + 2]!);
+      for (let i = denimStart; i < builder.indices.length; i += 3) triangles.push(new THREE.Triangle(at(builder.indices[i]!), at(builder.indices[i + 1]!), at(builder.indices[i + 2]!)));
+      const ray = new THREE.Ray(v(0, 0, -2), v(0, 0, 1)), hit = new THREE.Vector3();
+      const project = (p: THREE.Vector2) => {
+        ray.origin.set(p.x, p.y, -2);
+        let z = Infinity;
+        for (const triangle of triangles) if (ray.intersectTriangle(triangle.a, triangle.b, triangle.c, false, hit)) z = Math.min(z, hit.z);
+        return v(p.x, p.y, (Number.isFinite(z) ? z : -0.1) - 0.005);
+      };
+      const denimSkin = (p: THREE.Vector3): Skin => {
+        let a = legRings[0]!, b = legRings[1]!;
+        for (let i = 0; i < legRings.length - 1; i += 1) if (p.y <= legRings[i]![0]) { a = legRings[i]!; b = legRings[i + 1]!; }
+        const t = THREE.MathUtils.clamp((a[0] - p.y) / (a[0] - b[0]), 0, 1);
+        const weights = new Map<number, number>();
+        for (const [skin, blend] of [[a[3], 1 - t], [b[3], t]] as const) {
+          const [bone, other = bone, amount = 0] = skin;
+          weights.set(bone, (weights.get(bone) ?? 0) + blend * (1 - amount));
+          weights.set(other, (weights.get(other) ?? 0) + blend * amount);
+        }
+        const [first, second = first] = [...weights].sort((a, b) => b[1] - a[1]);
+        return [first![0], second![0], second![1] / (first![1] + second![1])];
+      };
+      const ink = new THREE.Color(look.trousers).multiplyScalar(0.52).getStyle();
+      const crease = (points: readonly (readonly [number, number])[], width = 0.003) => {
+        const curve = new THREE.SplineCurve(points.map(([dx, y]) => new THREE.Vector2(x + side * dx, y)));
+        const path = curve.getPoints(10);
+        for (let i = 1; i < path.length; i += 1) {
+          const a = path[i - 1]!, b = path[i]!;
+          const normal = new THREE.Vector2(a.y - b.y, b.x - a.x).normalize().multiplyScalar(width * Math.sin(i / 11 * Math.PI) / 2);
+          builder.patch([a.clone().add(normal), b.clone().add(normal), b.clone().sub(normal), a.clone().sub(normal)], project, denimSkin, "trousers", ink);
+        }
+      };
+      crease([[-0.075, 1.03], [-0.027, 1.055], [0.054, 1.04]]);
+      crease([[0.065, 0.89], [0.019, 0.91], [-0.029, 0.9]], 0.0023);
+      crease([[-0.085, 0.43], [-0.048, 0.38], [0.045, 0.365]], 0.0035);
+      crease([[0.085, 0.29], [0.016, 0.32], [-0.065, 0.285]], 0.0035);
+      crease([[-0.045, 0.26], [-0.006, 0.235], [0.052, 0.22]], 0.0025);
+    }
     if (look.turnup) {
       const lowerHem = fit > 1.1 ? 0.17 : 0;
       builder.loft([
@@ -482,15 +536,47 @@ function addLeg(builder: FigureBuilder, look: FigureLook, side: -1 | 1, w: numbe
   }
   // The shoe, lofted heel to toe along −Z, its sole on the ground at rest.
   const ankleZ = 0.04;
+  const sneaker = look.garment === "hoodie" || look.garment === "cardigan";
   const shoe: [z: number, halfWidth: number, halfHeight: number, centreY: number][] = [
     [0.18, 0.06, 0.06, 0.08], [0.15, 0.1, 0.095, 0.095], [0.06, 0.115, 0.115, 0.115], [-0.06, 0.12, 0.1, 0.1],
-    [-0.2, 0.125, 0.085, 0.085], [-0.33, 0.118, 0.072, 0.072], [-0.42, 0.092, 0.058, 0.06], [-0.47, 0.04, 0.03, 0.05],
+    [-0.2, 0.125, 0.085, 0.085], [-0.33, 0.118, 0.072, 0.072],
+    [-0.42, sneaker ? 0.108 : 0.092, 0.058, 0.06], [-0.47, sneaker ? 0.075 : 0.04, 0.03, 0.05],
   ];
   const k = look.feet ?? 1;
-  builder.loft(shoe.map(([z, hw, hh, cy]) => ({ at: v(x, cy * k, ankleZ + z), rx: hw * k, rz: hh * k, skin: [foot] as Skin })), {
+  const shoeStart = builder.positions.length / 3;
+  const shoeIndexStart = builder.indices.length;
+  const low = sneaker ? 0.82 : 1;
+  builder.loft(shoe.map(([z, hw, hh, cy]) => ({ at: v(x, cy * k * low, ankleZ + z), rx: hw * k, rz: hh * k * low, skin: [foot] as Skin })), {
     segments: 14, garment: "shoes", color: look.shoes, capStart: true, capEnd: true, boxy: 0.3, facing: v(0, 1, 0), wash: 0.05,
   });
-  builder.loft(shoe.slice(1, -1).map(([z, hw]) => ({ at: v(x, 0.019 * k, ankleZ + z), rx: hw * k * 1.015, rz: 0.016 * k, skin: [foot] as Skin })), {
+  if (sneaker) {
+    const canvas = new THREE.Color(look.shoes).lerp(new THREE.Color("#b7a68d"), 0.48);
+    // Warm canvas vamp, pale rubber toe and a low sole. Keep the established sole/stride envelope untouched.
+    for (let i = shoeStart; i < builder.positions.length / 3; i += 1) {
+      const y = builder.positions[i * 3 + 1]!, z = builder.positions[i * 3 + 2]!;
+      if (y > 0.045 && z > -0.36) {
+        builder.colors[i * 3] = canvas.r; builder.colors[i * 3 + 1] = canvas.g; builder.colors[i * 3 + 2] = canvas.b;
+      }
+    }
+    const triangles: THREE.Triangle[] = [];
+    const at = (i: number) => v(builder.positions[i * 3]!, builder.positions[i * 3 + 1]!, builder.positions[i * 3 + 2]!);
+    for (let i = shoeIndexStart; i < builder.indices.length; i += 3) triangles.push(new THREE.Triangle(at(builder.indices[i]!), at(builder.indices[i + 1]!), at(builder.indices[i + 2]!)));
+    const ray = new THREE.Ray(v(0, 1, 0), v(0, -1, 0)), hit = new THREE.Vector3();
+    const top = (p: THREE.Vector2) => {
+      ray.origin.set(p.x, 1, p.y);
+      let y = -Infinity;
+      for (const triangle of triangles) if (ray.intersectTriangle(triangle.a, triangle.b, triangle.c, false, hit)) y = Math.max(y, hit.y);
+      return v(p.x, (Number.isFinite(y) ? y : 0.05) + 0.002, p.y);
+    };
+    const toeInk = new THREE.Color(look.shoes).multiplyScalar(0.47).getStyle();
+    for (let i = 0; i < 12; i += 1) {
+      const a = i / 6 - 1, b = (i + 1) / 6 - 1;
+      const pa = new THREE.Vector2(x + a * 0.096 * k, -0.358 + a * a * 0.018);
+      const pb = new THREE.Vector2(x + b * 0.096 * k, -0.358 + b * b * 0.018);
+      builder.patch([pa, pb, pb.clone().add(new THREE.Vector2(0, 0.003)), pa.clone().add(new THREE.Vector2(0, 0.003))], top, [foot], "shoes", toeInk);
+    }
+  }
+  builder.loft(shoe.slice(1, sneaker ? undefined : -1).map(([z, hw]) => ({ at: v(x, 0.019 * k, ankleZ + z), rx: hw * k * 1.015, rz: 0.016 * k, skin: [foot] as Skin })), {
     segments: 12, garment: "shoes", color: new THREE.Color(look.shoes).multiplyScalar(0.73).getStyle(), capStart: true, capEnd: true, boxy: 0.4, facing: v(0, 1, 0),
   });
 }
@@ -722,16 +808,24 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     // A short fitted tee collar wraps the neck inside the opening; no tall white cone projects onto the chest.
     builder.loft([
       { at: v(0, 2.88, 0.035), rx: 0.185 * w, rz: 0.16, skin: [chest] },
-      { at: v(0, 2.995, 0.035), rx: 0.135, rz: 0.125, skin: [chest, neck, 0.65] },
-      { at: v(0, 3.075 - drop * 0.15, 0.04), rx: 0.115, rz: 0.108, skin: [neck] },
-      { at: v(0, 3.1 - drop * 0.15, 0.04), rx: 0.11, rz: 0.103, skin: [neck] },
-    ], { segments: 24, garment: "jacket", color: look.shirt ?? "#faf7ed", capStart: true });
+      { at: v(0, 2.96, 0.035), rx: 0.135, rz: 0.125, skin: [chest, neck, 0.4] },
+      { at: v(0, 3.04 - drop * 0.15, 0.04), rx: 0.108, rz: 0.103, skin: [chest, neck, 0.75] },
+      { at: v(0, 3.065 - drop * 0.15, 0.04), rx: 0.104, rz: 0.1, skin: [neck] },
+    ], {
+      segments: 24, garment: "jacket", color: look.shirt ?? "#faf7ed", capStart: true,
+      // A small low crew opening inside the hood, with a lower front edge. The earlier tall horizontal
+      // collar covered the throat like a rigid white funnel and exaggerated the apparent neck length.
+      deform: (point, ring, angle) => {
+        point.y -= Math.max(0, Math.sin(angle)) ** 2 * [0, 0.025, 0.065, 0.065][ring]!;
+        return point;
+      },
+    });
     // Project each cord onto the actual hood and sweatshirt triangles; its first point belongs to the rolled lip.
     for (let i = hoodIndexStart; i < builder.indices.length; i += 3) bodyTriangles.push(new THREE.Triangle(pointAt(builder.indices[i]!), pointAt(builder.indices[i + 1]!), pointAt(builder.indices[i + 2]!)));
     for (const side of [-1, 1]) {
       const anchor = lip.getPoint(side < 0 ? 0.055 : 0.945);
       builder.loft(Array.from({ length: 20 }, (_, i) => {
-        const t = i / 19, x = anchor.x * (1 - t * 0.13) + side * Math.sin(t * Math.PI) * 0.005, y = anchor.y - t * 0.36;
+        const t = i / 19, x = anchor.x * (1 - t * 0.13) + side * Math.sin(t * Math.PI) * 0.005, y = anchor.y - t * 0.27;
         const point = v(x, y, jacketZ(x, y) - 0.014);
         return { at: point, rx: t > 0.94 ? 0.008 : 0.0055, rz: 0.0055, skin: y > 2.75 ? [chest] as Skin : clothSkin(point) };
       }), { segments: 7, garment: "trim", color: look.shirt ?? "#dfe2cf", capStart: true, capEnd: true });
@@ -741,9 +835,24 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     const seam = new THREE.Color(look.jacket).multiplyScalar(0.65).getStyle();
     for (let i = 1; i < pocket.length; i += 1) {
       const [ax, ay] = pocket[i - 1]!, [bx, by] = pocket[i]!;
-      builder.patch([new THREE.Vector2(ax! * w, ay!), new THREE.Vector2(bx! * w, by!), new THREE.Vector2(bx! * w, by! - 0.004), new THREE.Vector2(ax! * w, ay! - 0.004)],
+      builder.patch([new THREE.Vector2(ax! * w, ay!), new THREE.Vector2(bx! * w, by!), new THREE.Vector2(bx! * w, by! - 0.006), new THREE.Vector2(ax! * w, ay! - 0.006)],
         (point) => v(point.x, point.y, jacketZ(point.x, point.y) - 0.018), clothSkin, "jacket", seam, 6);
     }
+    const clothInk = new THREE.Color(look.jacket).multiplyScalar(0.57).getStyle();
+    const fold = (points: readonly (readonly [number, number])[], width = 0.004) => {
+      const path = new THREE.SplineCurve(points.map(([x, y]) => new THREE.Vector2(x * w, y))).getPoints(12);
+      for (let i = 1; i < path.length; i += 1) {
+        const a = path[i - 1]!, b = path[i]!;
+        const normal = new THREE.Vector2(a.y - b.y, b.x - a.x).normalize().multiplyScalar(width * Math.sin(i / 13 * Math.PI) / 2);
+        builder.patch([a.clone().add(normal), b.clone().add(normal), b.clone().sub(normal), a.clone().sub(normal)],
+          (p) => v(p.x, p.y, jacketZ(p.x, p.y) - 0.007), clothSkin, "jacket", clothInk);
+      }
+    };
+    // Sparse compression lines at the side and lower hem give soft cotton a drawn structure.
+    fold([[-0.34, 2.64], [-0.31, 2.49], [-0.33, 2.39]], 0.003);
+    fold([[0.33, 2.56], [0.3, 2.43], [0.32, 2.37]], 0.003);
+    fold([[-0.37, 1.88], [-0.25, 1.8], [-0.08, 1.79]]);
+    fold([[0.36, 1.94], [0.25, 1.87], [0.06, 1.84]], 0.003);
   } else if (look.garment === "cardigan") {
     const shirt = look.shirt ?? "#e8e5d9";
     const onCloth = (point: THREE.Vector2, layer = 0.04) => v(point.x, point.y, jacketZ(point.x, point.y) - layer);
@@ -806,6 +915,7 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     builder.blob(at.clone().add(v(0, 0, -0.022)), v(0.022, 0.026, 0.018), [chest], "cap", look.bow, [6, 4]);
   }
   // Neck, shorter under a bigger head.
+  const messenger = look.hairStyle === "messenger";
   const neckY = (y: number) => 3.0 + (y - 3.0) * Math.max(0.3, (0.26 - drop) / 0.26);
   const neckTop = look.face === "anime" ? CHIN + HEAD_SPAN + (hp(0, 3.26, 0).y - CHIN - HEAD_SPAN) * 0.86 : neckY(3.26);
   builder.loft([
@@ -821,7 +931,11 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
   // The cheek turns gradually into a narrow jaw; closely spaced rings keep the lower face softly anatomical.
   const chinWidth = look.age === "older" ? 0.057 : look.age === "adult" ? 0.049 : 0.041;
   const jawWidth = look.age === "older" ? 0.129 : look.age === "adult" ? 0.121 : 0.113;
-  const jaw: [y: number, rx: number, rz: number, z: number][] = look.face === "anime"
+  const jaw: [y: number, rx: number, rz: number, z: number][] = messenger
+    ? [[3.17, 0.047, 0.081, -0.055], [3.195, 0.087, 0.124, -0.045], [3.23, 0.135, 0.163, -0.032],
+      [3.27, 0.176, 0.196, -0.022], [3.31, 0.205, 0.224, -0.012], [3.35, 0.222, 0.242, -0.005],
+      [3.395, 0.234, 0.253, 0.001], [3.435, 0.233, 0.254, 0.003]]
+    : look.face === "anime"
     ? [[3.185, chinWidth, 0.071, -0.061], [3.205, 0.078, 0.109, -0.055], [3.235, jawWidth, 0.15, -0.041],
       [3.265, 0.153, 0.184, -0.027], [3.295, 0.179, 0.207, -0.016], [3.325, 0.199, 0.223, -0.008],
       [3.35, 0.212, 0.235, -0.003], [3.375, 0.22, 0.244, 0], [3.405, 0.225, 0.25, 0.002], [3.435, 0.228, 0.252, 0.003]]
@@ -831,7 +945,11 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     [3.47, 0.232, 0.25, 0.0], [3.58, 0.232, 0.252, 0.008], [3.67, 0.205, 0.228, 0.012], [3.74, 0.14, 0.16, 0.014], [3.785, 0.03, 0.035, 0.014],
   ];
   const flatFace = look.face === "anime" ? 0.055 : 0.22;
-  const facialRelief = (x: number, y: number) => look.face === "anime"
+  const facialRelief = (x: number, y: number) => messenger
+    ? -0.012 * Math.exp(-((x / 0.025) ** 2) - ((y - 3.372) / 0.043) ** 2)
+      - 0.007 * Math.exp(-((x / 0.03) ** 2) - ((y - 3.35) / 0.022) ** 2)
+      - 0.003 * Math.exp(-((x / 0.045) ** 2) - ((y - 3.295) / 0.01) ** 2)
+    : look.face === "anime"
     ? -0.028 * Math.exp(-((x / 0.022) ** 2) - ((y - 3.401) / 0.064) ** 2)
       - 0.024 * Math.exp(-((x / 0.029) ** 2) - ((y - 3.358) / 0.023) ** 2)
       - 0.009 * Math.exp(-(((Math.abs(x) - 0.025) / 0.015) ** 2) - ((y - 3.35) / 0.013) ** 2)
@@ -855,7 +973,7 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
       const nose = Math.exp(-((x / 0.039) ** 2) - ((y - 3.341) / 0.011) ** 2) * 0.5;
       const lip = Math.exp(-((x / 0.047) ** 2) - ((y - 3.291) / 0.007) ** 2) * 0.35;
       const cheek = Math.exp(-(((Math.abs(x) - 0.17) / 0.037) ** 2) - ((y - 3.345) / 0.051) ** 2) * 0.16;
-      const pigment = skinPigment.clone().lerp(shadePigment, Math.min(0.65, nose + lip + cheek));
+      const pigment = skinPigment.clone().lerp(shadePigment, Math.min(0.65, nose + lip + cheek) * (messenger ? 0.35 : 1));
       builder.colors[i * 3] = pigment.r; builder.colors[i * 3 + 1] = pigment.g; builder.colors[i * 3 + 2] = pigment.b;
     }
   }
@@ -897,11 +1015,11 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     const inkCurve = (a: THREE.Vector2, control: THREE.Vector2, b: THREE.Vector2, width: number, bone: number, garment: "skin" | "eyes" | "hair", colour: string, layer = 0.016) =>
       inkPath(new THREE.QuadraticBezierCurve(a, control, b).getPoints(16), width, bone, garment, colour, layer);
     const mood = look.expression ?? "gentle";
-    const open = (mood === "bright" ? 0.031 : mood === "calm" ? 0.022 : 0.027) * (look.age === "older" ? 0.86 : 1);
+    const open = (messenger ? 0.036 : mood === "bright" ? 0.031 : mood === "calm" ? 0.022 : 0.027) * (look.age === "older" ? 0.86 : 1);
     const ink = "#29242b";
     for (const side of [-1, 1]) {
       const x = side * 0.103, y = 3.433;
-      const eyeWidth = 0.059;
+      const eyeWidth = messenger ? 0.061 : 0.059;
       const upper = Array.from({ length: 17 }, (_, i) => { const u = i / 8 - 1; return new THREE.Vector2(x + u * eyeWidth, y + open * (1 - u * u) + u * side * 0.003); });
       const lower = Array.from({ length: 17 }, (_, i) => { const u = 1 - i / 8; return new THREE.Vector2(x + u * eyeWidth, y - open * 0.45 * Math.max(0, 1 - u * u) ** 0.65 + u * side * 0.003); });
       paint([...upper, ...lower], eyes, "eyes", "#fbf5e9");
@@ -911,20 +1029,25 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
         const edge = Math.sqrt(Math.max(0, 1 - ((px - x) / eyeWidth) ** 2));
         return new THREE.Vector2(px, THREE.MathUtils.clamp(py, y - open * 0.44 * edge, y + open * 0.96 * edge * edge));
       }), eyes, "eyes", colour, layer);
-      iris(y + 0.003, 0.024, open, ink, 0.013);
-      const irisColour = look.iris ?? "#785848";
-      iris(y - open * 0.08, 0.02, open * 0.72, irisColour, 0.014);
-      iris(y + open * 0.1, 0.009, open * 0.82, ink, 0.015);
+      iris(y + 0.003, messenger ? 0.029 : 0.024, open, ink, 0.013);
+      const irisColour = messenger ? new THREE.Color(look.iris ?? "#5f595a").lerp(new THREE.Color("#8d8582"), 0.4).getStyle() : look.iris ?? "#785848";
+      iris(y - open * 0.08, messenger ? 0.024 : 0.02, open * (messenger ? 0.8 : 0.72), irisColour, 0.014);
+      iris(y + open * 0.1, 0.009, open * (messenger ? 0.57 : 0.82), ink, 0.015);
       const irisLight = new THREE.Color(irisColour).lerp(new THREE.Color("#d3baa0"), 0.36).getStyle();
       for (let ray = 0; ray < 5; ray += 1) {
         const a = Math.PI * (1.12 + ray * 0.17);
         stroke([[x + Math.cos(a) * 0.012, y + Math.sin(a) * open * 0.42], [x + Math.cos(a) * 0.018, y + Math.sin(a) * open * 0.61]], 0.0011, eyes, "eyes", irisLight, 0.016);
       }
-      oval(x - 0.006, y + open * 0.4, 0.003, 0.0042, eyes, "eyes", "#fffaf0", 0.017);
-      oval(x + 0.008, y - open * 0.2, 0.0015, 0.0017, eyes, "eyes", "#e8ded0", 0.017);
-      inkPath(upper, 0.0048, eyes, "eyes", ink);
-      inkPath(lower.slice(2, 12), 0.0015, eyes, "eyes", "#986e65", 0.014);
-      inkCurve(new THREE.Vector2(x - 0.047, y + 0.025), new THREE.Vector2(x, y + open + 0.019), new THREE.Vector2(x + 0.045, y + 0.029), 0.0012, head, "skin", "#bb9388", 0.008);
+      if (messenger) for (let hatch = 0; hatch < 4; hatch += 1) {
+        const px = x - 0.018 + hatch * 0.011;
+        stroke([[px, y - open * 0.34], [px + 0.002, y + open * 0.1]], 0.001, eyes, "eyes", "#343039", 0.016);
+      }
+      oval(x - 0.006, y + open * 0.4, messenger ? 0.0035 : 0.003, messenger ? 0.0046 : 0.0042, eyes, "eyes", "#fffaf0", 0.017);
+      if (!messenger) oval(x + 0.008, y - open * 0.2, 0.0015, 0.0017, eyes, "eyes", "#e8ded0", 0.017);
+      inkPath(upper, messenger ? 0.007 : 0.0048, eyes, "eyes", ink);
+      inkPath(lower.slice(2, 12), messenger ? 0.002 : 0.0015, eyes, "eyes", messenger ? "#655156" : "#986e65", 0.014);
+      if (messenger) inkCurve(new THREE.Vector2(x - 0.042, y + 0.035), new THREE.Vector2(x, y + open + 0.014), new THREE.Vector2(x + 0.043, y + 0.034), 0.001, head, "skin", "#8b6c68", 0.008);
+      if (!messenger) inkCurve(new THREE.Vector2(x - 0.047, y + 0.025), new THREE.Vector2(x, y + open + 0.019), new THREE.Vector2(x + 0.045, y + 0.029), 0.0012, head, "skin", "#bb9388", 0.008);
       for (let lash = 0; lash < 2; lash += 1) inkCurve(
         new THREE.Vector2(x + side * (0.043 + lash * 0.007), y + 0.013 - lash * 0.005),
         new THREE.Vector2(x + side * (0.057 + lash * 0.006), y + 0.016 - lash * 0.005),
@@ -936,6 +1059,10 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
         inkCurve(new THREE.Vector2(cheek - 0.003, 3.354), new THREE.Vector2(cheek, 3.345), new THREE.Vector2(cheek + 0.003, 3.339), 0.0017, head, "skin", new THREE.Color(look.skin).lerp(new THREE.Color("#c87e7d"), 0.27).getStyle(), 0.006);
       }
     }
+    if (messenger) {
+      inkCurve(new THREE.Vector2(-0.026, 3.294), new THREE.Vector2(0, 3.293), new THREE.Vector2(0.027, 3.294), 0.0028, head, "skin", ink, 0.006);
+      inkCurve(new THREE.Vector2(0.006, 3.365), new THREE.Vector2(0.009, 3.355), new THREE.Vector2(0.003, 3.351), 0.0016, head, "skin", "#795d59", 0.005);
+    } else {
     const lipShadow = new THREE.Color(look.skin).lerp(new THREE.Color("#8d5d61"), 0.55).getStyle();
     inkCurve(new THREE.Vector2(-0.037, 3.294), new THREE.Vector2(-0.015, 3.299), new THREE.Vector2(0, 3.293), 0.0022, head, "skin", lipShadow, 0.006);
     inkCurve(new THREE.Vector2(0, 3.293), new THREE.Vector2(0.018, mood === "calm" ? 3.292 : 3.287), new THREE.Vector2(0.038, 3.296), 0.0027, head, "skin", lipShadow, 0.006);
@@ -944,7 +1071,11 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     inkCurve(new THREE.Vector2(0.008, 3.382), new THREE.Vector2(0.018, 3.359), new THREE.Vector2(0.006, 3.347), 0.0016, head, "skin", noseShadow, 0.004);
     inkCurve(new THREE.Vector2(-0.017, 3.349), new THREE.Vector2(-0.01, 3.345), new THREE.Vector2(-0.006, 3.348), 0.0013, head, "skin", noseShadow, 0.004);
     oval(-0.006, 3.366, 0.005, 0.002, head, "skin", new THREE.Color(look.skin).lerp(new THREE.Color("#fffdf4"), 0.55).getStyle(), 0.004);
-    for (const side of [-1, 1]) builder.blob(hp(side * 0.227, 3.407, 0.01), sized(0.026, 0.052, 0.033), [head], "skin", look.skin, [10, 8]);
+    }
+    for (const side of [-1, 1]) {
+      builder.blob(hp(side * (messenger ? 0.239 : 0.227), messenger ? 3.416 : 3.407, 0.01), sized(0.026, messenger ? 0.047 : 0.052, 0.033), [head], "skin", look.skin, [10, 8]);
+      if (messenger) builder.blob(hp(side * 0.245, 3.415, -0.016), sized(0.014, 0.028, 0.008), [head], "skin", new THREE.Color(look.skin).lerp(new THREE.Color("#c88f8a"), 0.3).getStyle(), [8, 6]);
+    }
   } else if (look.face === "cute") {
     // Larger eyes set a little lower and wider, each with a highlight; a small mouth and a touch of blush, almost
     // flush with the face so they read as colour rather than bumps. No nose; the fringe covers the brows.
@@ -972,7 +1103,30 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     ? [[3.24, 0.25, 0.26, 0.05], [3.36, 0.262, 0.272, 0.03], [3.5, 0.255, 0.27, 0.015], [3.62, 0.245, 0.262, 0.012], [3.71, 0.2, 0.22, 0.015], [3.775, 0.1, 0.12, 0.016], [3.8, 0.02, 0.02, 0.016]]
     : [[3.3, 0.21, 0.22, 0.06], [3.42, 0.245, 0.262, 0.03], [3.54, 0.248, 0.268, 0.015], [3.64, 0.226, 0.246, 0.014], [3.72, 0.17, 0.19, 0.016], [3.775, 0.08, 0.1, 0.016], [3.795, 0.02, 0.02, 0.016]];
   const hairAt = ([y, rx, rz, z]: [number, number, number, number]) => ({ at: hp(0, y, z), rx: rx * s, rz: rz * s, skin: [head] as Skin });
-  if (look.hairStyle === "layered") {
+  if (messenger) {
+    // A close, short cut: the skull stays covered, while a small notch exposes each ear below the uneven fringe.
+    const shortRings: [number, number, number, number][] = [
+      ...headRings.filter(([y]) => y >= 3.23 && y <= 3.47).map(([y, rx, rz, z]): [number, number, number, number] => [y, rx + 0.018, rz + 0.023, z]),
+      [3.54, 0.254, 0.276, 0.011], [3.585, 0.25, 0.273, 0.012],
+      ...Array.from({ length: 12 }, (_, i): [number, number, number, number] => {
+        const angle = (1 - (i + 1) / 12) * Math.PI / 2;
+        return [3.585 + 0.22 * Math.cos(angle), Math.max(0.004, 0.25 * Math.sin(angle)), Math.max(0.004, 0.273 * Math.sin(angle)), 0.012];
+      }),
+    ];
+    builder.loft(shortRings.map(hairAt), {
+      segments: 36, garment: "hair", color: look.hair, capStart: true, capEnd: true,
+      deform: (point, _ring, angle) => {
+        const rawY = CHIN + (point.y + drop - CHIN) / s;
+        const opening = 1 - THREE.MathUtils.smoothstep(rawY, 3.49, 3.585);
+        point.z += Math.max(0, Math.sin(angle)) ** 2 * opening * 0.16 * s;
+        const ear = Math.exp(-(((rawY - 3.416) / 0.043) ** 2)) * Math.abs(Math.cos(angle)) ** 10;
+        point.x *= 1 - ear * 0.065;
+        point.z += ear * 0.025 * s;
+        if (rawY < 3.4) point.y += Math.sin(angle * 5 + 0.4) * 0.006 * s;
+        return point;
+      },
+    });
+  } else if (look.hairStyle === "layered") {
     // An inset scalp backing follows the actual head rings. Its lower width stays inside the cut's visible layers.
     // Only the face opening is recessed; the rear scalp remains covered continuously through every lock's root.
     builder.loft(headRings.filter(([y]) => y >= 3.205).map(([y, rx, rz, z]) => ({
@@ -1028,6 +1182,49 @@ function addBody(builder: FigureBuilder, look: FigureLook, w: number): void {
     builder.loft([hairline as [number, number, number, number]].concat(hairRings.filter(([y]) => y > hairline[0])).map(hairAt), { segments: 20, garment: "hair", color: look.hair, capEnd: true });
   }
   if (look.hairStyle === "bun") builder.blob(hp(0, 3.66, 0.24), sized(0.11, 0.1, 0.1), [head], "hair", look.hair);
+  if (messenger) {
+    const tuft = (points: readonly (readonly [number, number, number])[], width: number, depth = 0.005, colour = look.hair) => {
+      const curve = new THREE.CatmullRomCurve3(points.map(([x, y, z]) => hp(x, y, z)), false, "centripetal");
+      builder.loft(Array.from({ length: 10 }, (_, i) => {
+        const u = i / 9, taper = u < 0.35 ? Math.sin(u / 0.35 * Math.PI / 2) : (1 - u) / 0.65;
+        return { at: curve.getPoint(u), rx: (0.0002 + width * taper) * s, rz: (0.0002 + depth * taper) * s, skin: [head] as Skin };
+      }), { segments: width < 0.003 ? 4 : 7, garment: "hair", color: colour, capStart: true, capEnd: true });
+    };
+    const scalpFront = (x: number, y: number) => {
+      const ring = Math.sqrt(Math.max(0.04, 1 - ((y - 3.585) / 0.22) ** 2));
+      return 0.012 - 0.273 * ring * Math.sqrt(Math.max(0.03, 1 - (x / (0.25 * ring)) ** 2));
+    };
+    const fringeZ = (x: number) => 0.005 - 0.281 * Math.sqrt(Math.max(0.08, 1 - (x / 0.26) ** 2));
+    const bang = (root: number, bend: number, edge: number, end: number, y: number, width: number) => tuft([
+      [root, 3.73, scalpFront(root, 3.73) + 0.018], [bend, 3.635, scalpFront(bend, 3.635) + 0.015],
+      [edge, 3.557, fringeZ(edge)], [(edge + end) * 0.5, (3.557 + y) * 0.5, fringeZ((edge + end) * 0.5) - 0.004],
+      [end, y, fringeZ(end) + 0.003],
+    ], width, 0.006);
+    // Uneven, short curved bangs finish above the open eyes; no long diagonal sweep covers the face.
+    bang(-0.12, -0.164, -0.192, -0.199, 3.48, 0.021);
+    bang(-0.074, -0.09, -0.104, -0.145, 3.52, 0.02);
+    bang(-0.018, -0.012, -0.028, -0.048, 3.50, 0.023);
+    bang(0.035, 0.058, 0.046, 0.004, 3.52, 0.018);
+    bang(0.086, 0.12, 0.125, 0.094, 3.50, 0.021);
+    bang(0.143, 0.184, 0.197, 0.179, 3.51, 0.022);
+    bang(0.177, 0.214, 0.233, 0.235, 3.46, 0.016);
+    tuft([[-0.035, 3.65, -0.201], [-0.055, 3.548, -0.278], [-0.088, 3.48, -0.26]], 0.006, 0.002);
+    tuft([[0.102, 3.645, -0.187], [0.122, 3.547, -0.255], [0.102, 3.481, -0.255]], 0.005, 0.002);
+    tuft([[-0.087, 3.655, -0.204], [-0.077, 3.556, -0.273], [-0.101, 3.482, -0.257]], 0.0035, 0.0015);
+    tuft([[0.022, 3.65, -0.217], [0.004, 3.56, -0.28], [-0.029, 3.485, -0.269]], 0.003, 0.0015);
+    tuft([[0.156, 3.638, -0.173], [0.185, 3.551, -0.207], [0.166, 3.495, -0.215]], 0.0035, 0.0015);
+    for (const side of [-1, 1]) {
+      // Small temple ends and a little tapered nape, leaving the ears and neck readable.
+      tuft([[side * 0.208, 3.57, 0.012], [side * 0.245, 3.488, -0.018], [side * 0.241, 3.425, -0.022]], 0.018, 0.009);
+      tuft([[side * 0.183, 3.42, 0.185], [side * 0.223, 3.315, 0.177], [side * 0.256, 3.276, 0.191]], 0.025, 0.011);
+      tuft([[side * 0.116, 3.395, 0.24], [side * 0.155, 3.284, 0.223], [side * 0.183, side < 0 ? 3.235 : 3.212, 0.231]], 0.027, 0.011);
+      tuft([[side * 0.197, 3.68, 0.047], [side * 0.265, 3.607, 0.031], [side * 0.28, 3.548, 0.055]], 0.001, 0.0002);
+    }
+    tuft([[-0.045, 3.39, 0.27], [-0.013, 3.29, 0.241], [0.027, 3.235, 0.228]], 0.03, 0.012);
+    tuft([[-0.11, 3.759, 0.054], [-0.065, 3.8, 0.038], [0.01, 3.793, 0.037]], 0.001, 0.0002);
+    const lightStrand = new THREE.Color(look.hair).lerp(new THREE.Color("#c5c4be"), 0.22).getStyle();
+    tuft([[-0.131, 3.727, scalpFront(-0.131, 3.727) - 0.001], [-0.17, 3.634, scalpFront(-0.17, 3.634) - 0.002], [-0.182, 3.557, fringeZ(-0.182) - 0.004]], 0.0007, 0.0002, lightStrand);
+  }
   if (look.hairStyle === "layered") {
     const lock = (points: readonly (readonly [number, number, number])[], width: number, color = look.hair, depth = 0.005, feathered = false) => {
       const curve = new THREE.CatmullRomCurve3(points.map(([x, y, z]) => hp(x, y, z)), false, "centripetal");
@@ -1356,6 +1553,8 @@ export function createFigure(look: FigureLook, material: THREE.Material): Figure
 export type LegJointPose = { hip: number; hipOut: number; hipTwist: number; knee: number; ankle: number };
 export type ArmJointPose = { swing: number; out: number; elbow: number; wrist: number };
 export type FigurePose = {
+  /** Locomotion context for rigs whose authored rest axes differ from the procedural skeleton. */
+  motion?: { phase: number; move: number; walk: number; jog: number; run: number; air: number };
   hips: { x: number; y: number; z: number; pitch: number; yaw: number; roll: number };
   spine: { pitch: number; yaw: number; roll: number };
   chest: { pitch: number; yaw: number; roll: number };
@@ -1370,6 +1569,7 @@ export type FigurePose = {
 
 export function createFigurePose(): FigurePose {
   return {
+    motion: { phase: 0, move: 0, walk: 1, jog: 0, run: 0, air: 0 },
     hips: { x: 0, y: 0, z: 0, pitch: 0, yaw: 0, roll: 0 },
     spine: { pitch: 0, yaw: 0, roll: 0 }, chest: { pitch: 0, yaw: 0, roll: 0 }, neck: { pitch: 0, yaw: 0 }, head: { pitch: 0, yaw: 0, roll: 0 },
     eyes: 1, bag: { pitch: 0, roll: 0 },
@@ -1386,6 +1586,10 @@ export function createFigurePose(): FigurePose {
  * left, and positive roll lifts its right side.
  */
 export function poseFigure(figure: Figure, pose: FigurePose): void {
+  if (figure.applyAuthoredPose) {
+    figure.applyAuthoredPose(pose);
+    return;
+  }
   const b = figure.bones;
   b.hips.position.set(figure.hipsRest.x + pose.hips.x, figure.hipsRest.y + pose.hips.y, figure.hipsRest.z + pose.hips.z);
   b.hips.rotation.set(pose.hips.pitch, pose.hips.yaw, pose.hips.roll, "YXZ");

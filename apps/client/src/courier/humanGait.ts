@@ -142,7 +142,31 @@ export function bakeGait(keys: GaitKeys, leg: LegDimensions = BASE_LEG): GaitTab
 }
 
 type GaitTables = Readonly<{ walk: GaitTable; jog: GaitTable; run: GaitTable }>;
-const bakeAll = (leg: LegDimensions): GaitTables => ({ walk: bakeGait(WALK_KEYS, leg), jog: bakeGait(JOG_KEYS, leg), run: bakeGait(RUN_KEYS, leg) });
+function fitStride(keys: GaitKeys, leg: LegDimensions, target?: number): GaitTable {
+  const translation = leg.translationScale ?? 1;
+  const at = (amplitude: number) => bakeGait({
+    ...keys,
+    hip: keys.hip.map((value) => value * amplitude),
+    knee: keys.knee.map((value) => value * amplitude),
+    ankle: keys.ankle.map((value) => value * amplitude),
+    // The arm cadence/angles stay independent of a longer-legged rig's shorter leg arcs.
+    armSwing: keys.armSwing / amplitude,
+    float: keys.float * translation, sway: keys.sway * translation,
+  }, leg);
+  if (!target) return translation === 1 ? bakeGait(keys, leg) : at(1);
+  let low = 0.15, high = 1.4;
+  if (target < at(low).stride || target > at(high).stride) throw new Error("Measured stride lies outside the supported joint arcs");
+  for (let i = 0; i < 24; i += 1) {
+    const middle = (low + high) / 2;
+    if (at(middle).stride < target) low = middle; else high = middle;
+  }
+  return at((low + high) / 2);
+}
+const bakeAll = (leg: LegDimensions): GaitTables => ({
+  walk: fitStride(WALK_KEYS, leg, leg.strideTargets?.walk),
+  jog: fitStride(JOG_KEYS, leg, leg.strideTargets?.jog),
+  run: fitStride(RUN_KEYS, leg, leg.strideTargets?.run),
+});
 const TABLES = bakeAll(BASE_LEG);
 /** The baked gaits for the base leg, for tests and tools. */
 export const GAITS = TABLES;
@@ -343,6 +367,7 @@ export function relaxPose(gait: HumanGait, out: FigurePose): FigurePose {
 /** A calm standing pose: the same for every call (reduced motion, previews). */
 function standingPose(out: FigurePose): FigurePose {
   const rest = createFigurePose();
+  if (out.motion && rest.motion) Object.assign(out.motion, rest.motion);
   Object.assign(out.hips, rest.hips);
   Object.assign(out.spine, rest.spine);
   Object.assign(out.chest, rest.chest);
@@ -359,6 +384,8 @@ function standingPose(out: FigurePose): FigurePose {
 
 /** The joint angles for the gait's current state, written into `out` (a fresh pose by default). */
 export function humanPose(gait: HumanGait, out: FigurePose = createFigurePose(), leg: LegDimensions = BASE_LEG): FigurePose {
+  out.motion ??= { phase: 0, move: 0, walk: 1, jog: 0, run: 0, air: 0 };
+  Object.assign(out.motion, { phase: gait.phase, move: gait.reduced ? 0 : gait.move, walk: gait.walk, jog: gait.jog, run: gait.run, air: gait.air });
   if (gait.reduced) return standingPose(out);
   const u = gait.phase;
   const w = [gait.walk, gait.jog, gait.run] as const;
@@ -388,7 +415,12 @@ export function humanPose(gait: HumanGait, out: FigurePose = createFigurePose(),
     const legPose = out.legs[i]!;
     legPose.hip = lerp(idleHip, blendTable((g) => g.hip, at), move) + give * 0.42;
     legPose.knee = lerp(idleKnee, blendTable((g) => g.knee, at), move) + give * 0.84;
-    legPose.ankle = lerp(idleAnkle, blendTable((g) => g.ankle, at), move) + give * 0.42;
+    const phase = ((at % 1) + 1) % 1;
+    const walkStance = baked.walk.keys.stance;
+    const walkLift = phase > walkStance ? (leg.walkKneeLift ?? 0) * Math.sin((phase - walkStance) / (1 - walkStance) * Math.PI) * gait.walk * move : 0;
+    // Flex the ankle with the knee: lifting the ankle while pointing the toe farther down cancels clearance.
+    legPose.knee += walkLift;
+    legPose.ankle = lerp(idleAnkle, blendTable((g) => g.ankle, at), move) + give * 0.42 + walkLift;
     legPose.hipOut = still * (0.03 + relaxed * 0.025);
     legPose.hipTwist = still * 0.08;
   }
@@ -401,7 +433,7 @@ export function humanPose(gait: HumanGait, out: FigurePose = createFigurePose(),
   const yawAmount = blendKey("pelvisYaw") * DEG * move;
   const rollAmount = blendKey("pelvisRoll") * DEG * move;
   out.hips.y = Math.max(reachLeft, reachRight) - leg.hip + float;
-  out.hips.x = -blendKey("sway") * Math.sin(cycle) * move + still * 0.045 * weightShift;
+  out.hips.x = -blendKey("sway") * Math.sin(cycle) * move + still * 0.045 * (leg.translationScale ?? 1) * weightShift;
   out.hips.z = 0;
   const lean = blendKey("lean") * DEG * move + gait.lean;
   // Most of the lean is carried by the trunk above the pelvis, so a deeper lean never tips the planted leg into the ground.

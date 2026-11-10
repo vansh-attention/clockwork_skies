@@ -111,7 +111,10 @@ describe("the default compact London island", () => {
     expect(person.group.getObjectByName("visor")).toBeUndefined();
     // A skinned person: one figure mesh, with a head, two arms and two legs on its skeleton.
     expect(person.figure?.mesh).toBeInstanceOf(THREE.SkinnedMesh);
-    expect(person.figure?.mesh.skeleton.bones.map((bone) => bone.name)).toEqual(expect.arrayContaining(["head", "handL", "handR", "footL", "footR"]));
+    const figure = person.figure!;
+    expect(figure.mesh.skeleton.bones).toEqual(expect.arrayContaining([
+      figure.bones.head, ...figure.bones.hand, ...figure.bones.foot,
+    ]));
   });
 
   it("starts on a connected pavement with seven clear metres ahead, rather than behind a house", () => {
