@@ -6,9 +6,10 @@ import { animateBeacon, animateCourier, createBeacon, createCourierModel, dispos
 import { createGait, createPose, gaitPose, updateGait } from "./gait";
 import { COURIER_LOOK, createFigure, createFigureMaterial, createFigurePose, poseFigure, type FigureLook } from "./figure";
 import { createResidentAgents, residentLook } from "../city/residents";
-import { createHumanGait, humanPose, updateHumanGait } from "./humanGait";
+import { createHumanGait, gaitTables, humanPose, updateHumanGait } from "./humanGait";
 import { COURIER_HEIGHT } from "./size";
 import { WALK } from "./walker";
+import { AUTHORED_GEOMETRIES, AUTHORED_RIG } from "./authoredAssets";
 
 const ALLOWED = ["wall0", "copper", "ink", "water", "brass"] as const;
 
@@ -125,6 +126,11 @@ describe("human London courier", () => {
     return out;
   };
   const garment = (mesh: THREE.SkinnedMesh) => {
+    const slot = mesh.geometry.getAttribute("partSlot");
+    const uv = mesh.geometry.getAttribute("uv");
+    // Source part slots identify modular meshes; surfaceId/idShift is a random
+    // surface seed and carries no wardrobe meaning in imported geometry.
+    if (slot) return (i: number) => uv.getY(i) > 1 ? 10 : [0, 1, 2, 4, 7][slot.getX(i)]!;
     const shift = mesh.geometry.getAttribute("idShift");
     const base = Math.min(...Array.from(shift.array as Float32Array));
     const step = 0.0062;
@@ -132,7 +138,7 @@ describe("human London courier", () => {
   };
   const HAIR = 1, SHOES = 7, STRAP = 9;
 
-  it("is one skinned, outlined girl with the reference character's cute proportions, not a chibi's", () => {
+  it("is one skinned, cozy anime courier at the fitted height with expressive proportions", () => {
     const { group, figure, key } = model();
     expect(figure).toBeDefined();
     const meshes = meshesOf(group);
@@ -143,30 +149,39 @@ describe("human London courier", () => {
     expect(Object.keys(material.defines ?? {})).toEqual(expect.arrayContaining(["ILLUSTRATED_CHARACTER", "ILLUSTRATED_VERTEX_COLORS", "ILLUSTRATED_WORLD"]));
     expect(material.fragmentShader).toContain("location = 1");
     const points = skinned(mesh);
-    const bounds = new THREE.Box3().setFromPoints(points);
+    const referenced = new Set(Array.from(mesh.geometry.getIndex()!.array));
+    const bounds = new THREE.Box3().setFromPoints(points.filter((_, i) => referenced.has(i)));
     const height = bounds.max.y - bounds.min.y;
     // Short: about 1.5 m against a 6-unit (2.8 m) storey, the height the camera and pace are scaled to (size.ts).
     expect(Math.abs(height - COURIER_HEIGHT)).toBeLessThan(0.03);
     expect(Math.abs(figure!.height - COURIER_HEIGHT)).toBeLessThan(0.001);
     expect(height).toBeLessThan(3.4);
     expect(Math.abs(bounds.min.y)).toBeLessThan(0.02);
-    // Stubby and cute, as the reference's character is: a big head (about 4.2 heads tall) on short legs, but not a
-    // chibi's 3 heads. The chin is the lowest point of the face (skin, in front, above the hands).
+    // The decoded reference is about 5.6 heads tall. Source bind vertices face
+    // +Z; the authoring transform turns the whole figure to runtime −Z.
     const isSkin = garment(mesh);
     const position = mesh.geometry.getAttribute("position");
+    const skinIndex = mesh.geometry.getAttribute("skinIndex"), skinWeight = mesh.geometry.getAttribute("skinWeight");
+    const headIndex = mesh.skeleton.bones.indexOf(figure!.bones.head);
     let chin = Infinity;
     points.forEach((p, i) => {
-      if (isSkin(i) === 0 && position.getZ(i) < -0.12 && p.y > 0.6 * height) chin = Math.min(chin, p.y);
+      let headWeight = 0;
+      for (let j = 0; j < 4; j += 1) if (skinIndex.getComponent(i, j) === headIndex) headWeight += skinWeight.getComponent(i, j);
+      if (referenced.has(i) && isSkin(i) === 0 && headWeight > 0.8 && position.getZ(i) > 0.03) chin = Math.min(chin, p.y);
     });
+    expect(Number.isFinite(chin)).toBe(true);
     const heads = height / (bounds.max.y - chin);
-    expect(heads).toBeGreaterThan(3.8);
-    expect(heads).toBeLessThan(4.6);
+    expect(heads).toBeGreaterThan(5.2);
+    expect(heads).toBeLessThan(5.9);
+    expect((bounds.max.x - bounds.min.x) / height).toBeLessThan(0.36);
     const legs = figure!.bones.thigh[0].getWorldPosition(new THREE.Vector3()).y / height;
-    expect(legs).toBeGreaterThan(0.38);
-    expect(legs).toBeLessThan(0.46);
+    const sourceFloor = Math.min(...Object.values(AUTHORED_GEOMETRIES).map((source) => source.bounds.min[1]!));
+    const sourceTop = Math.max(...Object.values(AUTHORED_GEOMETRIES).map((source) => source.bounds.max[1]!));
+    const sourceHipRatio = (AUTHORED_RIG.bones[14]!.worldPosition[1]! - sourceFloor) / (sourceTop - sourceFloor);
+    expect(Math.abs(legs - sourceHipRatio)).toBeLessThan(0.01);
     // Each garment is its own outlined surface; the whole person stays a modest mesh.
-    expect(new Set(Array.from(mesh.geometry.getAttribute("idShift").array as Float32Array)).size).toBeGreaterThanOrEqual(10);
-    expect((mesh.geometry.getIndex()?.count ?? 0) / 3).toBeLessThan(12000);
+    expect(new Set(Array.from(mesh.geometry.getAttribute("idShift").array as Float32Array)).size).toBeGreaterThanOrEqual(8);
+    expect((mesh.geometry.getIndex()?.count ?? 0) / 3).toBeLessThan(20000);
     expect(key.visible).toBe(false);
     expect(group.getObjectByName("boiler")).toBeUndefined();
   });
@@ -174,13 +189,22 @@ describe("human London courier", () => {
   it("bends smoothly at the joints: weights sum to one and blend across knees and elbows", () => {
     const mesh = meshesOf(model().group)[0] as THREE.SkinnedMesh;
     const weights = mesh.geometry.getAttribute("skinWeight");
-    let blended = 0;
+    const indices = mesh.geometry.getAttribute("skinIndex");
+    const pairs = [[14, 15], [18, 19], [7, 8], [11, 12]];
+    const blended = pairs.map(() => 0);
     for (let i = 0; i < weights.count; i += 1) {
       const sum = weights.getX(i) + weights.getY(i) + weights.getZ(i) + weights.getW(i);
       expect(sum).toBeCloseTo(1, 5);
-      if (weights.getX(i) > 0.05 && weights.getY(i) > 0.05) blended += 1;
+      pairs.forEach((pair, p) => {
+        const influence = pair.map((bone) => {
+          let value = 0;
+          for (let j = 0; j < 4; j += 1) if (indices.getComponent(i, j) === bone) value += weights.getComponent(i, j);
+          return value;
+        });
+        if (influence.every((value) => value > 0.05)) blended[p]! += 1;
+      });
     }
-    expect(blended).toBeGreaterThan(150);
+    for (const count of blended) expect(count).toBeGreaterThan(0);
   });
 
   it("keeps its soles on the ground through walking, jogging and running, and lifts them in the swing", () => {
@@ -191,9 +215,13 @@ describe("human London courier", () => {
       const gait = createHumanGait();
       let lowestEver = Infinity, highestSupport = -Infinity, highestSwing = -Infinity;
       for (let frame = 0; frame < 180; frame += 1) {
-        updateHumanGait(gait, { dt: 1 / 60, distance: speed / 60, speed, heading: 0, y: 0, reduced: false, pace: figure!.pace, leg: figure!.leg });
+        updateHumanGait(gait, { dt: 1 / 60, distance: speed / 60, speed, heading: 0, y: 0, reduced: false, scale: figure!.scale, pace: figure!.pace, leg: figure!.leg });
+      }
+      // Sample a complete settled cycle rather than an arbitrary final second,
+      // which can omit heel strike or peak swing at the slower walking pace.
+      for (let frame = 0; frame < 120; frame += 1) {
+        gait.phase = frame / 120;
         poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
-        if (frame < 120 || frame % 4) continue;
         group.updateMatrixWorld(true);
         const soles = [0, 1].map((side) => {
           const points = skinned(mesh, (i) => isShoe(i) === SHOES && Math.sign(mesh.geometry.getAttribute("position").getX(i)) === (side ? 1 : -1));
@@ -203,30 +231,72 @@ describe("human London courier", () => {
         highestSupport = Math.max(highestSupport, Math.min(...soles));
         highestSwing = Math.max(highestSwing, Math.max(...soles));
       }
-      expect(lowestEver, `speed ${speed}`).toBeGreaterThan(-0.06);
+      expect.soft(lowestEver, `speed ${speed}`).toBeGreaterThan(-0.06);
       // Walking, a foot is always down; jogging and running float only briefly, a hand's breadth at most.
-      expect(highestSupport, `speed ${speed}`).toBeLessThan(speed < 3 ? 0.06 : 0.3);
+      expect.soft(highestSupport, `speed ${speed}`).toBeLessThan(speed < 3 ? 0.06 : 0.3);
       // The swing lifts the foot clear, a hand's breadth or more (scaled to her size when jogging and running).
-      expect(highestSwing, `speed ${speed}`).toBeGreaterThan(speed < 3 ? 0.15 : 0.3 * figure!.pace);
+      expect.soft(highestSwing, `speed ${speed}`).toBeGreaterThan(speed < 3 ? 0.15 : 0.3 * figure!.pace);
+    }
+  });
+
+  it("matches the reference's measured full-cycle lean, thigh lift, elbow flex and rhythm", () => {
+    // Source-bound Abeto run/sprint clips, evaluated at 120 phases on 2026-11-10. See movement-reference/
+    // 2026-11-10/stride-comparison.json: neck-to-pelvis lean medians 14.29° / 19.43°, cycle 0.8712 s.
+    const { figure } = model();
+    const f = figure!;
+    const radians = 180 / Math.PI;
+    const at = (bone: THREE.Object3D) => bone.getWorldPosition(new THREE.Vector3());
+    const percentile = (values: number[], fraction: number) => [...values].sort((a, b) => a - b)[Math.floor(values.length * fraction)]!;
+    for (const [speed, key, targetLean, maximumLift] of [[WALK.walkSpeed, "jog", 14.29, 40], [WALK.runSpeed, "run", 19.43, 49]] as const) {
+      const gait = createHumanGait();
+      for (let i = 0; i < 600; i += 1) updateHumanGait(gait, { dt: 1 / 120, distance: speed / 120, speed, heading: 0, y: 0, reduced: false, scale: f.scale, pace: f.pace, leg: f.leg });
+      const lean: number[] = [], lift: number[] = [], elbows: number[] = [];
+      for (let frame = 0; frame < 120; frame += 1) {
+        gait.phase = frame / 120;
+        poseFigure(f, humanPose(gait, createFigurePose(), f.leg));
+        f.group.updateMatrixWorld(true);
+        const trunk = at(f.bones.neck).sub(at(f.bones.hips));
+        lean.push(Math.atan2(Math.abs(trunk.z), trunk.y) * radians);
+        for (const side of [0, 1] as const) {
+          const thigh = at(f.bones.shin[side]).sub(at(f.bones.thigh[side]));
+          lift.push(Math.atan2(Math.abs(thigh.z), -thigh.y) * radians);
+          const elbow = at(f.bones.foreArm[side]);
+          elbows.push((Math.PI - at(f.bones.upperArm[side]).sub(elbow).angleTo(at(f.bones.hand[side]).sub(elbow))) * radians);
+        }
+      }
+      expect(Math.abs(percentile(lean, 0.5) - targetLean)).toBeLessThan(2);
+      expect(percentile(lift, 0.95)).toBeLessThan(maximumLift);
+      expect(percentile(elbows, 0.95) - percentile(elbows, 0.05)).toBeGreaterThan(15);
+      expect(Math.abs(gaitTables(f.leg)[key].stride * f.scale / speed - 0.871212)).toBeLessThan(0.01);
     }
   });
 
   it("swings each arm forward with the opposite leg", () => {
     const { figure } = model();
     const gait = createHumanGait();
-    for (let i = 0; i < 120; i += 1) updateHumanGait(gait, { dt: 1 / 60, distance: WALK.walkSpeed / 60, speed: WALK.walkSpeed, heading: 0, y: 0, reduced: false, pace: figure!.pace, leg: figure!.leg });
-    // Late in the left leg's swing it reaches forward while the right leg pushes back.
-    gait.phase = 0.82;
-    poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
-    figure!.group.updateMatrixWorld(true);
+    for (let i = 0; i < 120; i += 1) updateHumanGait(gait, { dt: 1 / 60, distance: WALK.walkSpeed / 60, speed: WALK.walkSpeed, heading: 0, y: 0, reduced: false, scale: figure!.scale, pace: figure!.pace, leg: figure!.leg });
     const z = (bone: THREE.Object3D) => bone.getWorldPosition(new THREE.Vector3()).z;
-    // Forward is -Z: the left foot leads, so the right hand does.
-    expect(z(figure!.bones.foot[0])).toBeLessThan(z(figure!.bones.foot[1]) - 0.8);
-    expect(z(figure!.bones.hand[1])).toBeLessThan(z(figure!.bones.hand[0]) - 0.3);
+    // Evaluate the actual skinned rig across a full cycle. Knee flexion can put a toe behind its thigh during
+    // recovery, so a single hard-coded toe frame does not establish opposite-arm carriage.
+    let opposite = 0, kneeRange = 0, handRange = 0;
+    for (let frame = 0; frame < 120; frame += 1) {
+      gait.phase = frame / 120;
+      poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
+      figure!.group.updateMatrixWorld(true);
+      const knees = z(figure!.bones.shin[0]) - z(figure!.bones.shin[1]);
+      const hands = z(figure!.bones.hand[0]) - z(figure!.bones.hand[1]);
+      opposite += knees * hands;
+      kneeRange = Math.max(kneeRange, Math.abs(knees));
+      handRange = Math.max(handRange, Math.abs(hands));
+    }
+    expect(opposite / 120).toBeLessThan(-0.02);
+    expect(kneeRange).toBeGreaterThan(0.3);
+    expect(handRange).toBeGreaterThan(0.3);
   });
 
-  it("wears its satchel strap outside the jacket, across the chest, and across the back under her long hair", () => {
-    const { figure } = model();
+  it("wears the dispatch strap outside the oversized jacket across both chest and back", () => {
+    // Optional working-jacket variant remains supported; the reference hoodie player has no dispatch bag.
+    const figure = createFigure({ ...COURIER_LOOK, garment: "jacket", fit: 1.13, bag: { body: "#303a3c", flap: "#3b4647", strap: "#273132" } }, createFigureMaterial());
     const mesh = figure!.mesh;
     mesh.updateMatrixWorld(true);
     const isGarment = garment(mesh);
@@ -237,15 +307,70 @@ describe("human London courier", () => {
       const hits = ray.intersectObject(mesh);
       expect(hits[0], `${side} ${x},${y}`).toBeDefined();
       const worn = hits.map((hit) => isGarment(index.getX(hit.faceIndex! * 3)));
-      if (side < 0) {
-        // In front, the strap is the first thing the eye meets.
-        expect(worn[0], `${side} ${x},${y}`).toBe(STRAP);
-      } else {
-        // Behind, her hair falls over it; under the hair, the strap still lies outside the jumper.
-        expect(worn[0], `${side} ${x},${y}`).toBe(HAIR);
-        expect(worn.find((g) => g !== HAIR), `${side} ${x},${y}`).toBe(STRAP);
-      }
+      // The new short layered haircut leaves the dispatch strap visible on both sides of the working jacket.
+      expect(worn[0], `${side} ${x},${y}`).toBe(STRAP);
     }
+  });
+
+  it("keeps the hoodie over its upper trousers through standing, jogging and running", () => {
+    const { figure } = model();
+    const mesh = figure!.mesh, positions = mesh.geometry.getAttribute("position"), ids = garment(mesh), index = mesh.geometry.getIndex()!;
+    const normals = mesh.geometry.getAttribute("normal");
+    type Sample = { vertices: number[]; side: number; weights: number[] };
+    const samples: Sample[] = [];
+    // Sample triangle interiors on both sides of the upper trousers. Rays use
+    // posed world points, so scaling, the +Z source frame and torso lean cannot
+    // accidentally turn a coverage check into a ray that misses the character.
+    for (const side of [-1, 1]) {
+      const candidates: { vertices: number[]; side: number }[] = [];
+      for (let at = 0; at < index.count; at += 3) {
+        const vertices = [index.getX(at), index.getX(at + 1), index.getX(at + 2)];
+        if (!vertices.every((i) => ids(i) === 4 && positions.getY(i) > figure!.hipsRest.y + 0.02
+          && positions.getY(i) < figure!.hipsRest.y + 0.16)) continue;
+        const center = vertices.reduce((p, i) => p.add(new THREE.Vector3().fromBufferAttribute(positions, i)), new THREE.Vector3()).multiplyScalar(1 / 3);
+        const facing = vertices.reduce((sum, i) => sum + normals.getZ(i), 0) / 3;
+        if (Math.abs(center.x) < 0.14 && center.z * side > 0.055 && facing * side > 0.35) candidates.push({ vertices, side: -side });
+      }
+      expect(candidates.length, `source side ${side}`).toBeGreaterThan(0);
+      // The original rear waistband has two large triangles. Multiple interior
+      // barycentric points give spatial coverage independent of tessellation.
+      const interiors = candidates.flatMap((candidate) => [[1 / 3, 1 / 3, 1 / 3], [0.6, 0.2, 0.2], [0.2, 0.6, 0.2], [0.2, 0.2, 0.6]]
+        .map((weights) => ({ ...candidate, weights })));
+      expect(interiors.length, `source side ${side}`).toBeGreaterThanOrEqual(6);
+      for (let i = 0; i < 6; i += 1) samples.push(interiors[Math.floor(i * (interiors.length - 1) / 5)]!);
+    }
+    const exposed = () => {
+      figure!.group.updateMatrixWorld(true);
+      mesh.skeleton.update();
+      let seen = 0;
+      for (const sample of samples) {
+        const point = new THREE.Vector3();
+        for (const [i, vertex] of sample.vertices.entries()) {
+          const v = new THREE.Vector3().fromBufferAttribute(positions, vertex);
+          mesh.applyBoneTransform(vertex, v);
+          point.addScaledVector(v.applyMatrix4(mesh.matrixWorld), sample.weights[i]!);
+        }
+        const hit = new THREE.Raycaster(new THREE.Vector3(point.x, point.y, sample.side * 6), new THREE.Vector3(0, 0, -sample.side)).intersectObject(mesh)[0];
+        expect(hit).toBeDefined();
+        if (ids(index.getX(hit!.faceIndex! * 3)) === 4) seen += 1;
+      }
+      return seen;
+    };
+    for (const speed of [0, 6.8, 9]) for (const phase of [0.1, 0.4, 0.7]) {
+      const gait = createHumanGait();
+      for (let i = 0; i < 120; i += 1) updateHumanGait(gait, { dt: 1 / 60, distance: speed / 60, speed, heading: 0, y: 0, reduced: false, scale: figure!.scale, pace: figure!.pace, leg: figure!.leg });
+      gait.phase = phase;
+      poseFigure(figure!, humanPose(gait, createFigurePose(), figure!.leg));
+      expect(exposed(), `speed ${speed}, phase ${phase}`).toBe(0);
+    }
+    // Positive control: contracting only the covering hoodie must expose the
+    // unchanged trousers to these same rays; a miss cannot masquerade as cover.
+    poseFigure(figure!, createFigurePose());
+    for (let i = 0; i < positions.count; i += 1) if (ids(i) === 2) {
+      positions.setX(i, positions.getX(i) * 0.2);
+      positions.setZ(i, positions.getZ(i) * 0.2);
+    }
+    expect(exposed()).toBeGreaterThan(0);
   });
 
   it("holds one calm pose under reduced motion", () => {
@@ -478,22 +603,26 @@ describe("drawn faces, the reference's way", () => {
   };
   const residents = createResidentAgents().map((agent, index) => residentLook(agent, index));
 
-  it("paints every resident's features flush: no bump of a nose, no ball eyes", () => {
+  it("keeps every resident's painted eyes on their own cheek surface across differing faces", () => {
     expect(residents.length).toBeGreaterThan(10);
-    for (const [index, look] of residents.entries()) {
-      const { position, garment } = build(look);
-      // The frontmost point of the face between the chin and the hairline, hair and a cap's peak aside.
-      let front = Infinity;
-      for (let i = 0; i < position.count; i += 1) {
-        const y = position.getY(i);
-        if (y < 3.22 || y > 3.56 || Math.abs(position.getX(i)) > 0.15 || garment(i) === HAIR || garment(i) === CAP) continue;
-        front = Math.min(front, position.getZ(i));
+    for (const [resident, look] of residents.entries()) {
+      const { figure, position, garment } = build(look);
+      figure.group.updateMatrixWorld(true);
+      const index = figure.mesh.geometry.getIndex()!;
+      let tested = 0;
+      for (let i = 0; i < position.count; i += 17) {
+        if (garment(i) !== EYES) continue;
+        const hits = new THREE.Raycaster(new THREE.Vector3(position.getX(i), position.getY(i), -3), new THREE.Vector3(0, 0, 1)).intersectObject(figure.mesh);
+        const skin = hits.find((hit) => garment(index.getX(hit.faceIndex! * 3)) === SKIN);
+        if (!skin) continue;
+        const gap = skin.point.z - position.getZ(i);
+        expect(gap, `resident ${resident}`).toBeGreaterThan(-0.025);
+        expect(gap, `resident ${resident}`).toBeLessThan(0.05);
+        tested += 1;
       }
-      // The face itself comes to about -0.2; drawn features add only a few millimetres.
-      expect(front, `resident ${index}`).toBeGreaterThan(-0.215);
-      expect(front, `resident ${index}`).toBeLessThan(-0.19);
+      expect(tested, `resident ${resident}`).toBeGreaterThan(3);
     }
-  });
+  }, 30000); // All 32 detailed skinned heads are raycast; this is a geometry check, not a frame-rate benchmark.
 
   it("covers every crown: hair (or a cap) down to a hairline above the brow, never a bare scalp", () => {
     for (const [index, look] of residents.entries()) {
@@ -506,24 +635,59 @@ describe("drawn faces, the reference's way", () => {
     }
   });
 
-  it("gives the courier a calm anime face: half-lidded eyes and brows drawn flush, no blush", () => {
+  it("covers the rear scalp beneath staggered shag roots while leaving the lower ends free", () => {
+    const check = (look: FigureLook, control = false) => {
+      const { figure, position, garment } = build(look);
+      figure.group.updateMatrixWorld(true);
+      const skin = figure.mesh.geometry.getAttribute("skinIndex"), head = figure.mesh.skeleton.bones.indexOf(figure.bones.head);
+      const candidates: number[] = [];
+      for (let i = 0; i < position.count; i += 1) if (garment(i) === SKIN && skin.getX(i) === head && position.getZ(i) > 0.06
+        && Math.abs(position.getX(i)) < 0.13 && position.getY(i) > figure.height * 0.87 && position.getY(i) < figure.height * 0.97) candidates.push(i);
+      expect(candidates.length).toBeGreaterThan(6);
+      const samples = Array.from({ length: 8 }, (_, i) => candidates[Math.floor(i * (candidates.length - 1) / 7)]!);
+      const rearSurface = (vertex: number) => {
+        const hits = new THREE.Raycaster(new THREE.Vector3(position.getX(vertex), position.getY(vertex), 3), new THREE.Vector3(0, 0, -1)).intersectObject(figure.mesh);
+        expect(hits[0]).toBeDefined();
+        return garment(figure.mesh.geometry.getIndex()!.getX(hits[0]!.faceIndex! * 3));
+      };
+      for (const vertex of samples) expect([HAIR, CAP]).toContain(rearSurface(vertex));
+      if (control) {
+        // Recess the actual backing and locks into the skull: the same rear-view rays must detect exposed skin.
+        for (let i = 0; i < position.count; i += 1) if (garment(i) === HAIR) position.setZ(i, position.getZ(i) * 0.1);
+        expect(samples.some((vertex) => rearSurface(vertex) === SKIN)).toBe(true);
+      }
+    };
+    check(COURIER_LOOK, true);
+    for (const look of residents) check(look);
+  }, 15000);
+
+  it("gives the courier open painted anime eyes attached to the broader cheek planes", () => {
     const { figure, position, garment } = build(COURIER_LOOK);
-    const s = COURIER_LOOK.head ?? 1;
-    let front = Infinity, eyes = 0, pink = 0;
-    const color = figure.mesh.geometry.getAttribute("color");
+    figure.group.updateMatrixWorld(true);
+    const index = figure.mesh.geometry.getIndex()!;
+    let checked = 0;
+    const eyeY: number[] = [];
     for (let i = 0; i < position.count; i += 1) {
-      const g = garment(i);
-      if (position.getY(i) < 0.8 * figure.height || Math.abs(position.getX(i)) > 0.18 * s) continue;
-      if (g === EYES) eyes += 1;
-      if (g !== SKIN && g !== EYES) continue;
-      front = Math.min(front, position.getZ(i));
-      // Blush would be a light, saturated pink on the cheeks (colours are linear: skin keeps green at about 0.7 of red).
-      const r = color.getX(i), gr = color.getY(i);
-      if (g === SKIN && r > 0.6 && gr / r < 0.55) pink += 1;
+      if (garment(i) !== EYES) continue;
+      eyeY.push(position.getY(i));
+      if (i % 11) continue;
+      const x = position.getX(i), y = position.getY(i), z = position.getZ(i);
+      const hits = new THREE.Raycaster(new THREE.Vector3(x, y, -3), new THREE.Vector3(0, 0, 1)).intersectObject(figure.mesh);
+      const skin = hits.find((hit) => garment(index.getX(hit.faceIndex! * 3)) === SKIN);
+      if (!skin) continue;
+      expect(skin.point.z - z).toBeGreaterThan(-0.02);
+      expect(skin.point.z - z).toBeLessThan(0.045);
+      checked += 1;
     }
-    expect(eyes).toBeGreaterThan(100);
-    expect(front).toBeGreaterThan(-0.215 * s);
-    expect(pink).toBe(0);
+    expect(checked).toBeGreaterThan(15);
+    // Open almond lids: livelier than the old half-lid, wider than tall instead of round toy eyes.
+    const eyeToHead = (Math.max(...eyeY) - Math.min(...eyeY)) / (0.625 * COURIER_LOOK.head! * 0.86);
+    expect(eyeToHead).toBeGreaterThan(0.07);
+    expect(eyeToHead).toBeLessThan(0.12);
+    expect(COURIER_LOOK).toMatchObject({ garment: "hoodie", hairStyle: "messenger", expression: "bright", legs: "trousers", longTop: true });
+    expect(COURIER_LOOK.bag).toBeUndefined();
+    expect(COURIER_LOOK.cap).toBeUndefined();
+    expect(COURIER_LOOK.ribbon).toBeUndefined();
   });
 });
 

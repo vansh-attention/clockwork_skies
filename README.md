@@ -1,6 +1,6 @@
-# Little London
+# Little Islands
 
-The default experience is **Little London**, a compact painted island with brick lanes, corner shops, garden squares, a winding river and three walkable bridges. Its 100 original London buildings, eight landmark places and 32 residents share one authored plan with walking and camera collision. Abeto Messenger guides the cel shading, painted materials, outlines and street-scale framing. The default scene has no clockwork tower, gears, terrace rings or sky-flight objectives.
+The default experience is **Little Islands**, a compact painted island with brick lanes, corner shops, garden squares, a winding river and three walkable bridges. Its 100 original London buildings, eight landmark places and 32 residents share one authored plan with walking and camera collision. Abeto Messenger guides the cel shading, painted materials, outlines and street-scale framing. The default scene has no clockwork tower, gears, terrace rings or sky-flight objectives.
 
 The current direction and evidence are recorded in [.claude/abeto-messenger/island-audit.md](.claude/abeto-messenger/island-audit.md). The earlier Clockwork rebuild audit is historical and has been superseded by the user's small-island direction.
 

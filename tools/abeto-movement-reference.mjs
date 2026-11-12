@@ -1,16 +1,137 @@
 import { chromium } from "playwright";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 
 // Owned reference browser. Commands on stdin declare every action; REA attaches passively to port 9338.
-const output = ".claude/abeto-messenger/movement-reference";
+const retained = ".claude/abeto-messenger/movement-reference";
+const outputArg = process.argv.indexOf("--output");
+const output = outputArg >= 0 ? process.argv[outputArg + 1] : retained;
+if (!output) throw new Error("--output requires a directory");
 await mkdir(output, { recursive: true });
+if (process.argv.includes("--close-live")) {
+  const remote = await chromium.connectOverCDP("http://127.0.0.1:9338", { timeout: 10000 });
+  const session = await remote.newBrowserCDPSession();
+  await session.send("Browser.close").catch(() => {});
+  console.log("Closed the owned temporary reference browser.");
+  process.exit(0);
+}
+if (process.argv.includes("--inspect-cycle")) {
+  const remote = await chromium.connectOverCDP("http://127.0.0.1:9338", { timeout: 10000 });
+  const page = remote.contexts()[0].pages().find((p) => p.url().startsWith("https://messenger.abeto.co/"));
+  const samples = await page.evaluate(() => {
+    const root = window.__abetoMotion.character._localObject.animationProps.mixer._root;
+    const bones = root.skeleton.bones;
+    const saved = bones.map(b => ({ p: b.position.clone(), q: b.quaternion.clone(), s: b.scale.clone() }));
+    const result = [];
+    try {
+      for (const [stage, actionIndex] of [["jog", 1], ["sprint", 2]]) {
+        const clip = window.__abetoMotion.character._localObject.animationProps.actions[actionIndex]._clip;
+        const tracks = clip.tracks.map(track => ({ name: track.name, value: track.createInterpolant() }));
+        for (let step = 0; step < 120; step++) {
+          for (const track of tracks) {
+            const [, index, property] = /bone_(\d+)\.(position|quaternion|scale)/.exec(track.name);
+            bones[Number(index)][property].fromArray(track.value.evaluate(step / 120 * clip.duration));
+          }
+          root.updateMatrixWorld(true);
+          const inverse = root.matrixWorld.clone().invert();
+          result.push({ stage, phase: step / 120, time: step / 120 * clip.duration,
+            joints: bones.map(b => b.getWorldPosition(b.position.clone()).applyMatrix4(inverse).toArray()) });
+        }
+      }
+    } finally {
+      bones.forEach((b, i) => { b.position.copy(saved[i].p); b.quaternion.copy(saved[i].q); b.scale.copy(saved[i].s); });
+      root.updateMatrixWorld(true);
+    }
+    return result;
+  });
+  await writeFile(`${output}/clip-cycles.json`, JSON.stringify({ scope: "Controlled evaluation of the shipped run and sprint clips through a full cycle; live pose restored before returning", samples }));
+  console.log(JSON.stringify({ samples: samples.length, cycles: 2 }));
+  process.exit(0);
+}
+if (process.argv.includes("--measure-stride")) {
+  const remote = await chromium.connectOverCDP("http://127.0.0.1:9338", { timeout: 10000 });
+  const page = remote.contexts()[0].pages().find((p) => p.url().startsWith("https://messenger.abeto.co/"));
+  await page.evaluate(() => {
+    const mesh = window.__abetoMotion.character._localObject.animationProps.mixer._root;
+    window.__strideSamples = []; window.__strideStage = "idle"; window.__strideActive = true;
+    const sample = (time) => {
+      if (!window.__strideActive) return;
+      mesh.updateMatrixWorld(true);
+      const inverse = mesh.matrixWorld.clone().invert();
+      const joints = mesh.skeleton.bones.map(b => b.getWorldPosition(b.position.clone()).applyMatrix4(inverse).toArray());
+      const props = window.__abetoMotion.character._localObject.animationProps;
+      window.__strideSamples.push({ time, stage: window.__strideStage, joints, clip: props.actions.map(a => ({ time: a.time, weight: a.getEffectiveWeight() })) });
+      requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+  });
+  for (const [stage, keys, duration] of [["idle", [], 500], ["jog", ["a"], 2100], ["release", [], 700], ["sprint", ["s", "Shift"], 1800], ["sprint", ["a", "Shift"], 1800], ["stop", [], 650]]) {
+    await page.evaluate(stage => { window.__strideStage = stage; }, stage);
+    for (const key of keys) await page.keyboard.down(key);
+    await page.waitForTimeout(duration);
+    await page.screenshot({ path: `${output}/stride-${stage}.png` });
+    for (const key of keys) await page.keyboard.up(key);
+  }
+  const samples = await page.evaluate(() => { window.__strideActive = false; return window.__strideSamples; });
+  await writeFile(`${output}/stride-samples.json`, JSON.stringify({ action_performer: "Playwright", samples }));
+  console.log(JSON.stringify({ frames: samples.length, stages: [...new Set(samples.map(s => s.stage))] }));
+  process.exit(0);
+}
+if (process.argv.includes("--inspect-rig")) {
+  const remote = await chromium.connectOverCDP("http://127.0.0.1:9338", { timeout: 10000 });
+  const page = remote.contexts()[0].pages().find((p) => p.url().startsWith("https://messenger.abeto.co/"));
+  const rig = await page.evaluate(() => {
+    const m = window.__abetoMotion.character, props = m._localObject.animationProps, root = props.mixer._root;
+    const nodes = []; root.traverse?.(node => { if (node.isBone || node.isSkinnedMesh) nodes.push({ name: node.name, type: node.type, bones: node.skeleton?.bones.map(b => b.name) }); });
+    const bones = root.skeleton.bones.map((b, i) => ({ name: b.name, parent: b.parent?.name, rest: b.position.clone().setFromMatrixPosition(root.skeleton.boneInverses[i].clone().invert()).toArray() }));
+    return { root: { type: root.type }, bones, nodes, clips: props.actions.map(a => ({ name: a._clip.name, duration: a._clip.duration, tracks: a._clip.tracks.map(t => ({ name: t.name, size: t.values.length, times: t.times.length })) })) };
+  });
+  await writeFile(`${output}/rig-inventory.json`, JSON.stringify(rig, null, 2));
+  console.log(JSON.stringify({ bones: rig.bones, clips: rig.clips.map(c => ({ name: c.name, duration: c.duration, tracks: c.tracks.length })) }));
+  process.exit(0);
+}
+if (process.argv.includes("--inspect-live")) {
+  const remote = await chromium.connectOverCDP("http://127.0.0.1:9338", { timeout: 10000 });
+  const page = remote.contexts()[0].pages().find((p) => p.url().startsWith("https://messenger.abeto.co/"));
+  page.setDefaultTimeout(10000);
+  const session = await page.context().newCDPSession(page);
+  await session.send("Debugger.enable");
+  await session.send("Debugger.resume").catch(() => {});
+  await session.send("Debugger.disable");
+  console.log(JSON.stringify(await page.evaluate(() => ({ text: document.body.innerText, scripts: performance.getEntriesByType("resource").filter(r => r.name.includes(".js")).map(r => r.name) }))));
+  if (process.argv.includes("--enter")) {
+    const begin = page.getByText(/begin|start|play|enter/i).first();
+    if (await begin.count()) await begin.click({ timeout: 5000 });
+    else await page.mouse.click(640, 615);
+    await page.waitForTimeout(2500);
+  }
+  if (process.argv.includes("--dismiss-intro")) {
+    for (let i = 0; i < 14; i += 1) {
+      await page.mouse.click(980, 635); await page.waitForTimeout(550);
+      await page.screenshot({ path: `${output}/intro-${i}.png`, timeout: 10000 });
+    }
+    await page.waitForTimeout(1000);
+  }
+  await page.screenshot({ path: `${output}/current-reference.png`, timeout: 10000 });
+  console.log(JSON.stringify({ url: page.url(), text: await page.locator("body").innerText({ timeout: 5000 }) }));
+  await session.detach();
+  process.exit(0);
+}
 if (process.argv.includes("--probe")) {
   // Source-bound one-shot instrumentation of our isolated reference page. No application files are changed.
   const remote = await chromium.connectOverCDP("http://127.0.0.1:9338");
   const page = remote.contexts()[0].pages().find((p) => p.url().startsWith("https://messenger.abeto.co/"));
   const session = await page.context().newCDPSession(page);
-  const source = await readFile(`${output}/sources/files/origins/c8fb610f33ee0a3113993263066321d0fafb162d90da47955a8a7eb7ca0af7bd/assets/App3D-DwM1eiaC.js`, "utf8");
+  const retainedSource = await readFile(`${retained}/sources/files/origins/c8fb610f33ee0a3113993263066321d0fafb162d90da47955a8a7eb7ca0af7bd/assets/App3D-DwM1eiaC.js`, "utf8");
+  const source = await page.evaluate(async () => {
+    const response = await fetch("/assets/App3D-DwM1eiaC.js", { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`Reference source HTTP ${response.status}`);
+    return response.text();
+  });
+  const sourceHash = createHash("sha256").update(source).digest("hex");
+  const sameSource = sourceHash === createHash("sha256").update(retainedSource).digest("hex");
+  console.log(JSON.stringify({ sourceHash, sameSource }));
   const offset = source.indexOf('emit("character_broadcast_position"');
   const lineNumber = source.slice(0, offset).split("\n").length - 1;
   const columnNumber = offset - source.lastIndexOf("\n", offset) - 1;
@@ -62,13 +183,13 @@ if (process.argv.includes("--probe")) {
     if (!process.argv.includes("--timing")) await page.screenshot({ path: `${output}/probe-${name}.png` });
   }
   const { samples, inputs } = await page.evaluate(() => { window.__abetoSampling = false; removeEventListener("keydown", window.__abetoKeyProbe); removeEventListener("keyup", window.__abetoKeyProbe); return { samples: window.__abetoSamples, inputs: window.__abetoInputEvents }; });
-  await writeFile(`${output}/${process.argv.includes("--timing") ? "live-timing" : "live-motion"}.json`, JSON.stringify({ source: "App3D-DwM1eiaC.js", breakpoint: { offset, lineNumber, columnNumber }, identity, actions, inputs, samples }, null, 2));
+  await writeFile(`${output}/${process.argv.includes("--timing") ? "live-timing" : "live-motion"}.json`, JSON.stringify({ source: "App3D-DwM1eiaC.js", sourceHash, sameSource, action_performer: "Playwright; source binding and timing are controlled observations, not a REA capture", breakpoint: { offset, lineNumber, columnNumber }, identity, actions, inputs, samples }, null, 2));
   console.log(JSON.stringify({ identity, samples: samples.length, actions: actions.length }));
   // Disconnect this CDP client; the first process owns and will terminate the reference browser.
   process.exit(0);
 }
-const browser = await chromium.launch({ executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true, args: ["--remote-debugging-port=9338", "--remote-debugging-address=127.0.0.1", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"] });
-const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, recordVideo: { dir: output, size: { width: 1280, height: 720 } } });
+const browser = await chromium.launch({ executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true, args: ["--remote-debugging-port=9338", "--remote-debugging-address=127.0.0.1", ...(process.argv.includes("--native") ? [] : ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"])] });
+const context = await browser.newContext({ viewport: { width: 1280, height: 720 }, ...(process.argv.includes("--no-video") ? {} : { recordVideo: { dir: output, size: { width: 1280, height: 720 } } }) });
 const page = await context.newPage();
 const log = [], errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
@@ -106,6 +227,12 @@ try {
       }
     }
     if (command.action === "inspect") console.log(JSON.stringify(await page.evaluate(() => ({ text: document.body.innerText, globals: Object.keys(window).filter((k) => /app|game|player|world|experience|three|scene/i.test(k)), scripts: [...document.scripts].map((s) => ({ src: s.src, type: s.type })) }))));
+    if (command.action === "rig") console.log(JSON.stringify(await page.evaluate(() => {
+      const motion = window.__abetoMotion;
+      if (!motion) return { error: "run --probe after verifying source identity" };
+      const root = motion.character._localObject.animationProps.mixer._root;
+      return { bones: root.skeleton.bones.map((b) => ({ name: b.name, position: b.position.toArray() })), root: root.type };
+    })));
     await page.waitForTimeout(command.settle ?? 200);
     const frames = await page.evaluate(() => window.__movementFrames.slice(-240));
     const record = { ...command, started, ended: Date.now(), frames };

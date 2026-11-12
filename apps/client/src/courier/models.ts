@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import { merge, type MaterialKey, type MaterialSource } from "../city/kit";
 import type { CourierPose } from "./gait";
-import { COURIER_LOOK, createFigure, createFigureMaterial, createFigurePose, poseFigure, type Figure, type FigurePose } from "./figure";
+import { createFigurePose, poseFigure, type Figure, type FigurePose } from "./figure";
+import { createAuthoredFigure } from "./authoredFigure";
+import { createAuthoredMaterial } from "./authoredMaterial";
 
 /**
  * Two original couriers share the same gameplay pose API: the London human and the legacy wind-up courier.
@@ -129,9 +131,9 @@ function boilerGeometry(): THREE.BufferGeometry {
  * arms; the wind-up key is kept, hidden, for the shared animation path.
  */
 function createHumanCourier(): CourierModel {
-  const material = createFigureMaterial();
+  const material = createAuthoredMaterial();
   material.userData.ownedByModel = true;
-  const figure = createFigure(COURIER_LOOK, material);
+  const figure = createAuthoredFigure(material);
   const group = new THREE.Group();
   group.name = "courier";
   group.userData.character = "London courier";

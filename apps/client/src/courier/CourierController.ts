@@ -10,7 +10,7 @@ import { createPlaneModel } from "../planeModel";
 import { FixedClock } from "../space/clock";
 import { easeFactor, fit, lerp, lerpFPS, shortestAngle, stepSpring, type Spring } from "../motion/ease";
 import { animateBeacon, animateCourier, animateHuman, createBeacon, createCourierModel, disposeModel, type CourierModel } from "./models";
-import { createFigurePose } from "./figure";
+import { animateFigureExpression, createFigurePose } from "./figure";
 import { createHumanGait, humanPose, relaxPose, resetHumanGait, updateHumanGait } from "./humanGait";
 import { FlightInputLatch, NEUTRAL_FLIGHT } from "./flightInput";
 import {
@@ -1230,6 +1230,7 @@ export class CourierController {
     if (figure) {
       updateHumanGait(this.humanGait, { ...input, scale: figure.scale, pace: figure.pace, leg: figure.leg });
       animateHuman(this.courier, relaxPose(this.humanGait, humanPose(this.humanGait, this.figurePose, figure.leg)));
+      animateFigureExpression(figure, this.humanGait.time, reduced);
     } else {
       updateGait(this.gait, input);
       animateCourier(this.courier, gaitPose(this.gait, this.courierPose), tickValue(cycleMs(nowMs)), reduced);

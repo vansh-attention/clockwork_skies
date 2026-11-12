@@ -56,6 +56,8 @@ export type IllustratedMaterialOptions = {
    * glancing highlight, and line breaks that stay put on the body as it moves (they follow the bind-pose position).
    */
   character?: boolean;
+  /** Light paper-like character washes; leaves the scenery lighting and existing character mode unchanged. */
+  softCharacter?: boolean;
 };
 
 /**
@@ -485,6 +487,12 @@ const fragmentShader = /* glsl */ `
         vec3 shade = uShadow;
       #endif
 
+      #ifdef ILLUSTRATED_SOFT_CHARACTER
+        // Anime ink drawings carry most form in the silhouette and a few cloth folds. A half-value shadow makes
+        // their pale faces look like hard plastic; keep this material's wash light and warm even in street shade.
+        shade = mix(base * vec3(0.79, 0.74, 0.76), base, 0.08);
+      #endif
+
       // How much sun reaches the surface: its facing times the cast-shadow term.
       float sunlight = max(facing, 0.0);
       float castShadow = 1.0;
@@ -505,6 +513,9 @@ const fragmentShader = /* glsl */ `
       #ifdef ILLUSTRATED_CHARACTER
         float aa = fwidth(sunlight) * 0.75 + 1e-4;
         float lit = smoothstep(0.1 - aa, 0.15 + aa, sunlight);
+        #ifdef ILLUSTRATED_SOFT_CHARACTER
+          lit = smoothstep(0.02, 0.42, sunlight);
+        #endif
       #else
         float lit = smoothstep(uCut.x, uCut.y, sunlight);
       #endif
@@ -549,6 +560,17 @@ const fragmentShader = /* glsl */ `
         lineMask *= lineBreak(vWorldPosition, 0.55, 0.06);
       #else
         lineMask *= lineBreak(vBindPosition + vec3(surfaceId * 31.0), 1.8, 0.06);
+      #endif
+
+      #ifdef ILLUSTRATED_SOFT_CHARACTER
+        // Figure eye patches are explicitly inked. Their shared skin surface avoids a second grey contour round
+        // every iris and highlight; their bone/geometry identifiers remain available to the rig and diagnostics.
+        float eyePaint = 1.0 - step(0.001, abs(vIdShift - 0.062));
+        surfaceId -= eyePaint * 0.062;
+        // Near-black hair already supplies its silhouette. Re-inking every overlapping lock's normal/depth seam
+        // turns soft shaggy strands into an engraved helmet; only the authored glint strokes describe the parting.
+        float darkHair = 1.0 - step(0.001, abs(vIdShift - 0.0062));
+        lineMask *= (1.0 - eyePaint) * (1.0 - darkHair);
       #endif
 
       // Sky and ground light, by how much the surface faces up.
@@ -616,6 +638,7 @@ export function createIllustratedMaterial(options: IllustratedMaterialOptions) {
     if (options.seeThrough) defines.ILLUSTRATED_SEE_THROUGH = "";
     if (options.vertexColors) defines.ILLUSTRATED_VERTEX_COLORS = "";
     if (options.character) defines.ILLUSTRATED_CHARACTER = "";
+    if (options.character && options.softCharacter) defines.ILLUSTRATED_SOFT_CHARACTER = "";
   }
   const material = new ShaderMaterial({
     name: "ClockworkIllustratedMaterial",

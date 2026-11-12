@@ -7,8 +7,8 @@ test("the painted London island visits all eight places without clockwork or a b
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
   page.on("request", (request) => requests.push(request.url()));
   await page.goto("/?debug=1");
-  await expect(page).toHaveTitle("Little London");
-  await expect(page.getByRole("heading", { name: /little.*london/i })).toBeVisible();
+  await expect(page).toHaveTitle("Little Islands");
+  await expect(page.getByRole("heading", { name: /little.*islands/i })).toBeVisible();
   await expect(page.getByText("TOWN CLOCK")).toHaveCount(0);
   await page.getByRole("button", { name: "VIEW THE ISLAND", exact: true }).click();
   const districts = page.getByRole("navigation", { name: "Districts" }).getByRole("button");
@@ -22,6 +22,8 @@ test("the painted London island visits all eight places without clockwork or a b
   const state = await page.evaluate(() => JSON.parse((window as unknown as { render_game_to_text(): string }).render_game_to_text()));
   expect(state.population).toBe(32);
   expect(state.parts).toContain("Little London island");
+  expect(state.animals).toBe(4);
+  expect(state.parts).toContain("London cats and dogs");
   expect(state.parts.join(" ")).not.toMatch(/Clockwork hill town|Lanternfall|Launchers/);
   expect(state.calls).toBeGreaterThan(1);
   expect(state.objective).toBeNull();

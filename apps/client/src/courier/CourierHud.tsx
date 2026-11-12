@@ -69,7 +69,7 @@ export function CourierHud({ hud, time, guideOpen = false, onGuide, onRestart, o
   useEffect(() => { if (!roam && task.done) againRef.current?.focus(); }, [task.done, roam]);
   if (roam) return <>
     <header className="flight-header city-header courier-header">
-      <div className="wordmark"><span className="mark" aria-hidden="true">L</span><strong>LITTLE LONDON</strong></div>
+      <div className="wordmark"><span className="mark" aria-hidden="true">L</span><strong>LITTLE ISLANDS</strong></div>
       <div className="phase"><span>ON FOOT</span><b>{time}</b></div>
       <button onMouseDown={keepTownFocus} onClick={onGuide} aria-expanded={guideOpen}>GUIDE</button>
     </header>
