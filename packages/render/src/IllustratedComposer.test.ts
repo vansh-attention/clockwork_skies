@@ -155,3 +155,102 @@ describe("see-through canopies", () => {
     expect(illustratedEnvironment.uFocus.value.lengthSq()).toBe(0);
   });
 });
+
+describe("depth prepass and smoothing", () => {
+  type Call = { scene: Scene; override: unknown; layers: number; shadowsDue: boolean; target: unknown };
+  /** A renderer that only notes what it is asked to draw, with a shadow map waiting to be redrawn. */
+  function recorder(outputColorSpace = "srgb") {
+    const calls: Call[] = [];
+    const shadowMap = { autoUpdate: false, needsUpdate: true };
+    let target: unknown = null;
+    const renderer = {
+      autoClear: true, outputColorSpace, shadowMap,
+      setRenderTarget: (next: unknown) => { target = next; },
+      clear: () => {},
+      render: (scene: Scene, camera: PerspectiveCamera) => {
+        calls.push({ scene, override: scene.overrideMaterial, layers: camera.layers.mask, shadowsDue: shadowMap.needsUpdate, target });
+      },
+    };
+    return { renderer: renderer as unknown as WebGLRenderer, calls, shadowMap };
+  }
+
+  it("draws the prepass layer depth-first with a bare material, and leaves the camera, the scene and the shadows as they were", async () => {
+    const { DEPTH_PREPASS_LAYER } = await import("./material");
+    const { renderer, calls, shadowMap } = recorder();
+    const composer = new IllustratedComposer(renderer);
+    const world = new Scene();
+    const camera = new PerspectiveCamera();
+    composer.render(world, camera);
+    expect(calls.filter((call) => call.scene === world)).toHaveLength(1);
+    calls.length = 0;
+
+    composer.setDepthPrepass(true);
+    expect(composer.depthPrepass).toBe(true);
+    composer.render(world, camera);
+    const [first, second] = calls;
+    // First the prepass layer alone, colourless, with the shadow redraw held back...
+    expect((first!.override as ShaderMaterial).name).toBe("ClockworkDepthPrepass");
+    expect((first!.override as ShaderMaterial).colorWrite).toBe(false);
+    expect(first!.layers).toBe(1 << DEPTH_PREPASS_LAYER);
+    expect(first!.shadowsDue).toBe(false);
+    // ...then everything, painted, with the shadows redrawn by the pass that sees every caster.
+    expect(second!.scene).toBe(world);
+    expect(second!.override).toBeNull();
+    expect(second!.layers).toBe(1);
+    expect(second!.shadowsDue).toBe(true);
+    expect(first!.target).toBe(second!.target);
+    expect(world.overrideMaterial).toBeNull();
+    expect(camera.layers.mask).toBe(1);
+    expect(shadowMap).toEqual({ autoUpdate: false, needsUpdate: true });
+    expect(renderer.autoClear).toBe(true);
+    composer.dispose();
+  });
+
+  it("smooths the finished picture through its own buffer, but never a debug view or a renderer that does not output sRGB", () => {
+    const { renderer, calls } = recorder();
+    const composer = new IllustratedComposer(renderer);
+    composer.resize(800, 600, 1);
+    const world = new Scene();
+    const camera = new PerspectiveCamera();
+    const passes = () => { calls.length = 0; composer.render(world, camera); return calls.map((call) => [call.scene === world ? "world" : (call.scene.children[0] as Mesh<never, ShaderMaterial>).material.name, call.target === null ? "screen" : "buffer"]); };
+    expect(passes()).toEqual([["world", "buffer"], ["ClockworkOutlinePass", "screen"]]);
+
+    composer.setSmoothing(true);
+    expect(composer.smoothing).toBe(true);
+    expect(passes()).toEqual([["world", "buffer"], ["ClockworkOutlinePass", "buffer"], ["ClockworkSmoothPass", "screen"]]);
+    const smoothPass = (calls[2]!.scene.children[0] as Mesh<never, ShaderMaterial>).material;
+    expect((smoothPass.uniforms.uTexel!.value as { x: number; y: number }).x).toBeCloseTo(1 / 800);
+    expect(calls[1]!.target).not.toBe(calls[0]!.target);
+
+    composer.setDebugView("depth");
+    expect(passes()).toEqual([["world", "buffer"], ["ClockworkOutlinePass", "screen"]]);
+    composer.setDebugView("final");
+    composer.setSmoothing(false);
+    expect(passes()).toEqual([["world", "buffer"], ["ClockworkOutlinePass", "screen"]]);
+    composer.dispose();
+
+    const linear = recorder("srgb-linear");
+    const plain = new IllustratedComposer(linear.renderer);
+    plain.setSmoothing(true);
+    plain.render(world, camera);
+    expect(linear.calls.map((call) => call.target === null)).toEqual([false, true]);
+    plain.dispose();
+  });
+
+  it("finds scenery's line breaks itself, only where a line is drawn, from the world position behind each pixel", () => {
+    const { renderer, calls } = recorder();
+    const composer = new IllustratedComposer(renderer);
+    const camera = new PerspectiveCamera(50, 2, 1, 500);
+    camera.position.set(10, 20, 30);
+    camera.updateMatrixWorld(true);
+    composer.render(new Scene(), camera);
+    const outline = (calls[1]!.scene.children[0] as Mesh<never, ShaderMaterial>).material;
+    expect(outline.fragmentShader).toContain("if (amount > 0.0 && breaks[front] > 0.5) amount *= worldLineBreak(");
+    // Clip space back to the world: the middle of the near plane lies one unit in front of the camera.
+    const unproject = outline.uniforms.uUnproject!.value as import("three").Matrix4;
+    const e = unproject.elements;
+    const w = -e[11]! + e[15]!;
+    expect([(-e[8]! + e[12]!) / w, (-e[9]! + e[13]!) / w, (-e[10]! + e[14]!) / w].map((v) => Number(v.toFixed(4)))).toEqual([10, 20, 29]);
+    composer.dispose();
+  });
+});

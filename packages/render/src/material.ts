@@ -148,6 +148,16 @@ function hsvToColor(h: number, s: number, v: number): Color {
   return new Color().setRGB(channel(1), channel(2 / 3), channel(1 / 3));
 }
 
+/**
+ * The five taps of three's soft shadow filter (a Vogel disk: tap i sits sqrt((i + 0.5) / 5) out, i golden angles
+ * round), before the per-pixel turn. Worked out here once, so the shader turns them all with one sine and cosine.
+ */
+const SHADOW_TAPS = Array.from({ length: 5 }, (_, index) => {
+  const radius = Math.sqrt((index + 0.5) / 5);
+  const angle = index * 2.399963229728653;
+  return `vec2(${(Math.cos(angle) * radius).toFixed(9)}, ${(Math.sin(angle) * radius).toFixed(9)})`;
+});
+
 const vertexShader = /* glsl */ `
   #include <common>
   #include <skinning_pars_vertex>
@@ -166,8 +176,9 @@ const vertexShader = /* glsl */ `
   out vec3 vWorldNormal;
   out vec3 vWorldPosition;
   out vec3 vBindPosition;
-  out vec4 vClipPosition;
   out vec2 vUv;
+  // The depth prepass (createDepthPrepassMaterial) runs this same vertex shader: both must land on the very same depth.
+  invariant gl_Position;
   out float vIdShift;
   #ifdef ILLUSTRATED_VERTEX_COLORS
     out vec3 vBaseColor;
@@ -203,8 +214,7 @@ const vertexShader = /* glsl */ `
     vViewNormal = transformedNormal;
     vWorldNormal = inverseTransformDirection(transformedNormal, viewMatrix);
     vWorldPosition = worldPosition.xyz;
-    vClipPosition = projectionMatrix * viewMatrix * worldPosition;
-    gl_Position = vClipPosition;
+    gl_Position = projectionMatrix * viewMatrix * worldPosition;
     #ifdef ILLUSTRATED_WORLD
       #include <shadowmap_vertex>
     #endif
@@ -250,7 +260,6 @@ const fragmentShader = /* glsl */ `
   in vec3 vWorldNormal;
   in vec3 vWorldPosition;
   in vec3 vBindPosition;
-  in vec4 vClipPosition;
   in vec2 vUv;
   in float vIdShift;
   #ifdef ILLUSTRATED_VERTEX_COLORS
@@ -454,10 +463,34 @@ const fragmentShader = /* glsl */ `
     return 0.6;
   }
 
+  #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0 && defined( SHADOWMAP_TYPE_PCF )
+  /**
+   * three's soft shadow lookup (five hardware-filtered taps on a disk, turned by a per-pixel angle) with the same taps
+   * and weights, written so the GPU can skip it. The lookups name level 0 (the map has no others), so they need no
+   * screen-space derivatives and may sit inside a branch that differs from pixel to pixel; and one sine and cosine
+   * turn all five taps. 'coord' is the shadow coordinate after the perspective divide, inside the map.
+   */
+  float sunShadow(sampler2DShadow shadowMap, vec2 shadowMapSize, float shadowIntensity, float shadowBias, float shadowRadius, vec3 coord) {
+    coord.z += shadowBias;
+    if (coord.z > 1.0) return 1.0;
+    float phi = interleavedGradientNoise(gl_FragCoord.xy) * PI2;
+    vec2 turn = vec2(cos(phi), sin(phi)) * (shadowRadius / shadowMapSize.x);
+    mat2 spin = mat2(turn.x, turn.y, -turn.y, turn.x);
+    float shadow = textureLod(shadowMap, vec3(coord.xy + spin * ${SHADOW_TAPS[0]}, coord.z), 0.0)
+      + textureLod(shadowMap, vec3(coord.xy + spin * ${SHADOW_TAPS[1]}, coord.z), 0.0)
+      + textureLod(shadowMap, vec3(coord.xy + spin * ${SHADOW_TAPS[2]}, coord.z), 0.0)
+      + textureLod(shadowMap, vec3(coord.xy + spin * ${SHADOW_TAPS[3]}, coord.z), 0.0)
+      + textureLod(shadowMap, vec3(coord.xy + spin * ${SHADOW_TAPS[4]}, coord.z), 0.0);
+    return mix(1.0, shadow * 0.2, shadowIntensity);
+  }
+  #endif
+
   /**
    * Where the ink may be drawn (1) or is left out (0): illustrators lift the pen now and then, so long contours break
    * into strokes. Two noise fields multiplied give irregular gaps of a few tens of centimetres. Characters use their
-   * bind-pose position, so a gap stays on the same bit of sleeve while the arm swings.
+   * bind-pose position, so a gap stays on the same bit of sleeve while the arm swings. Scenery leaves its breaks to
+   * the line pass (IllustratedComposer worldLineBreak, the same two fields at the same place), which works them out
+   * only where a line is actually drawn instead of on every pixel of every wall.
    */
   float lineBreak(vec3 p, float scale, float threshold) {
     float a = valueNoise(p * scale);
@@ -475,6 +508,8 @@ const fragmentShader = /* glsl */ `
     vec3 viewNormal = normalize(vViewNormal);
     float surfaceId = uSurfaceId + vIdShift;
     float lineMask = uOutline;
+    // 1 asks the line pass to break this surface's lines by its place in the world (scenery); 0 leaves them as given.
+    float worldBreaks = 0.0;
     #ifdef ILLUSTRATED_WORLD
       vec3 worldNormal = normalize(vWorldNormal);
       vec3 toSun = normalize(uSunDirection);
@@ -497,13 +532,21 @@ const fragmentShader = /* glsl */ `
       float sunlight = max(facing, 0.0);
       float castShadow = 1.0;
       #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
-        if (receiveShadow) {
+        // A surface turned away from the sun is in shade whatever stands in front of it: only the rest look.
+        if (receiveShadow && facing > 0.0) {
           DirectionalLightShadow sun = directionalLightShadows[0];
-          float shadowTerm = getShadow(directionalShadowMap[0], sun.shadowMapSize, sun.shadowIntensity, sun.shadowBias, sun.shadowRadius, vDirectionalShadowCoord[0]);
           // Fade out toward the shadow map's border, so shadows do not pop in at the edge of the fitted square.
           vec3 coord = vDirectionalShadowCoord[0].xyz / vDirectionalShadowCoord[0].w;
           float border = smoothstep(0.0, 0.08, min(min(coord.x, 1.0 - coord.x), min(coord.y, 1.0 - coord.y)));
-          castShadow = mix(1.0, shadowTerm, border);
+          #if defined( SHADOWMAP_TYPE_PCF )
+            if (border > 0.0) {
+              float shadowTerm = sunShadow(directionalShadowMap[0], sun.shadowMapSize, sun.shadowIntensity, sun.shadowBias, sun.shadowRadius, coord);
+              castShadow = mix(1.0, shadowTerm, border);
+            }
+          #else
+            float shadowTerm = getShadow(directionalShadowMap[0], sun.shadowMapSize, sun.shadowIntensity, sun.shadowBias, sun.shadowRadius, vDirectionalShadowCoord[0]);
+            castShadow = mix(1.0, shadowTerm, border);
+          #endif
         }
       #endif
       sunlight *= castShadow;
@@ -557,7 +600,7 @@ const fragmentShader = /* glsl */ `
         float glance = pow(1.0 - max(dot(toView, halfway), 0.0), 5.0) * sunlight * max(dot(worldNormal, halfway), 0.0);
         float wall = clamp((0.95 - worldNormal.y) / 0.05, 0.0, 1.0);
         color += uHighlight * smoothstep(0.03, 0.034, glance) * wall;
-        lineMask *= lineBreak(vWorldPosition, 0.55, 0.06);
+        worldBreaks = 1.0;
       #else
         lineMask *= lineBreak(vBindPosition + vec3(surfaceId * 31.0), 1.8, 0.06);
       #endif
@@ -616,11 +659,50 @@ const fragmentShader = /* glsl */ `
         if (t > 0.0 && t < 1.0 && distance(vWorldPosition, cameraPosition + sight * t) < uSeeThrough * mix(1.5, 1.0, t)) discard;
       }
     #endif
-    float reversedDepth = 1.0 - (0.5 * vClipPosition.z / vClipPosition.w + 0.5);
     outColor = vec4(color, surfaceId);
-    outInfo = vec4(reversedDepth, encodeNormal(viewNormal), lineMask);
+    outInfo = vec4(worldBreaks, encodeNormal(viewNormal), lineMask);
   }
 `;
+
+/**
+ * Objects on this layer are drawn depth-first when a composer's depth prepass is on (IllustratedComposer
+ * setDepthPrepass): their depth is laid down by a bare shader, and the painted materials then shade only the pixels
+ * that end up visible. Down a street most walls stand behind nearer walls, and each used to be painted in full before
+ * being covered. Opt an object in only if its material passes `supportsDepthPrepass`.
+ */
+export const DEPTH_PREPASS_LAYER = 5;
+
+/**
+ * Whether a material's surfaces may be laid down by the depth prepass: an illustrated material with the stock vertex
+ * shader, opaque, and never cutting pixels away (see-through canopies and dissolving characters do, so they are drawn
+ * in the ordinary way).
+ */
+export function supportsDepthPrepass(material: ShaderMaterial): boolean {
+  const defines = material.defines ?? {};
+  return material.vertexShader === vertexShader && !material.transparent && material.depthWrite && material.depthTest
+    && !("ILLUSTRATED_SEE_THROUGH" in defines) && !("ILLUSTRATED_CHARACTER" in defines);
+}
+
+/**
+ * The bare material the depth prepass draws with: the illustrated materials' own vertex shader (so wind sway, skinning
+ * and instancing put every vertex exactly where the painted pass will) and no colour at all.
+ */
+export function createDepthPrepassMaterial(): ShaderMaterial {
+  const material = new ShaderMaterial({
+    name: "ClockworkDepthPrepass",
+    glslVersion: GLSL3,
+    uniforms: { uTime: illustratedEnvironment.uTime, uWind: illustratedEnvironment.uWind },
+    vertexShader,
+    fragmentShader: "void main() {}",
+    colorWrite: false,
+  });
+  material.uniforms.uTime = illustratedEnvironment.uTime;
+  material.uniforms.uWind = illustratedEnvironment.uWind;
+  const defaults = material.defaultAttributeValues as Record<string, number[]>;
+  defaults.sway = [0];
+  defaults.idShift = [0];
+  return material;
+}
 
 const SHARED_WORLD_UNIFORMS = [
   "uSunDirection", "uFogNear", "uFogFar", "uFogDensity", "uSkyLight", "uGroundLight", "uCut", "uHighlight", "uTime", "uWind",

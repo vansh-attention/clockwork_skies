@@ -1,5 +1,24 @@
 Original prompt: in the gh repo clockwork_london, use reverse-engineer-anything and .claude/abeto-messenger as inspiration to rebuild the entire Clockwork city as London, iterating until the city feels as realistic and inhabited as Abeto Messenger.
 
+## Rendering performance pass (2026-11-16 to 17, branch perf/rendering)
+
+Goal: make the island faster to draw without changing how it looks. Measured on an AMD Radeon 740M (integrated), 1920x1080 window at pixel ratio 1.25 (2400x1350 drawn), GPU time per frame from timer queries.
+
+- Where the time went (street view, 17 to 18 ms): about 8 ms painting scenery pixels, 4 to 5 ms in the line pass, 3 ms main-pass geometry, 2 ms redrawing shadows. Triangle count was not the limit: culling 70% of them moved GPU time by 0.3 ms.
+- Depth prepass (IllustratedComposer.setDepthPrepass, DEPTH_PREPASS_LAYER): scenery depth is laid down first with a bare shader that reuses the materials' vertex shader, so each pixel is painted once instead of once per wall behind it. The largest single gain.
+- Shadow lookup (material.ts sunShadow): three's own five taps and weights, but skipped for surfaces facing away from the sun, with one sine and cosine instead of ten.
+- Scenery line breaks moved from every material pixel to the line pass, which works them out only where a line is drawn, from the world position behind the pixel. Characters still break their own lines on the body.
+- Line pass: no trip to linear light and back when the grade table is fully on; the centre of the edge cross is read once; the info buffer is 8-bit.
+- City geometry: each material is one batched mesh cut into 48-unit chunks, indexed, culled per chunk against the camera and the sun's shadow square by a light routine in kit.ts (three's own per-chunk pass cost about 2.5 ms of script a frame). three still runs once per batch first: its shadow shader needs the texture that pass creates.
+- Resolution control (resolution.ts, gpuTimer.ts): follows the GPU's real time per frame. Drops when over 13 ms for two decisions running, rises only when the rise is known to fit under 11 ms, rests after every change, ignores loading and stalls the card had no part in. The old rule only reacted below 42 fps, so the game sat at 48. A resolution switch stalls the picture for 17 to 67 ms.
+- Smoothing pass (IllustratedComposer.setSmoothing): removes stair-steps from slanted lines for about 0.2 ms.
+
+Results. Old and new builds alternated in one page at equal resolution, GPU ms per frame: street 17.8 to 14.3, square 18.2 to 12.3, title view no slower. Each build on its own in headless Chrome on the same GPU, walking at the spawn street: old 51 to 56 fps at 17.4 to 19.5 ms; new 77 to 88 fps at 10.1 to 10.8 ms, at full resolution throughout. Script time per frame rose by about 1 ms. With smoothing off the new picture differs from the old in 0.005 to 0.025% of pixels (line-gap ends shifting by a pixel). Later the same machine slowed down for both builds (old 42 fps and lowering its own resolution, new 56 fps at full resolution); numbers from different sessions are not comparable.
+
+Verification: repository typecheck passes; render package 27 tests pass; client unit tests pass except timeouts in slow tests that also time out on the untouched code on this machine (3 to 6 of 722, depending on load; no assertion fails); 5 island browser scenarios pass on the software renderer; production build passes. tests/space/play.spec.ts now counts drawn frames instead of waiting on the wall clock for its pause check: at about one frame a second the game runs in slow motion and the old check failed one run in three on the untouched code too.
+
+Not done: a 60 Hz cap on shadow redraws (it would make a running character's shadow trail behind the feet); packing depth into the info buffer to cut the line pass's lookups by a third; resident level of detail; the one-second pause on first entering walking mode (present before, shader compilation). Not observed in a visible window with vertical sync: the app window was hidden throughout. Nothing committed.
+
 ## Active goal — Abeto replica and right-hand reference character (2026-11-10)
 
 The user rejected the earlier art. Its completion statements below are historical, not acceptance of this goal. Current target: the RIGHT green-hoodie person in `/Users/vansh_uni/.codex/attachments/8444b3c7-fc01-4f7b-8980-1ea5a72e2cea/image-1.png`, slim anime body/face and short black separated fringe, informed by Abeto Messenger through reverse-engineer-anything. Show intermediate asset previews and take review breaks. Full replica scope stays active; a clarification about town/interactions versus visual replication is pending while the player asset progresses.
