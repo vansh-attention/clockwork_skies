@@ -622,7 +622,9 @@ describe("drawn faces, the reference's way", () => {
       }
       expect(tested, `resident ${resident}`).toBeGreaterThan(3);
     }
-  }, 30000); // All 32 detailed skinned heads are raycast; this is a geometry check, not a frame-rate benchmark.
+    // All 32 detailed skinned heads are raycast; this is a geometry check, not a frame-rate benchmark. It takes 30 to
+    // 45 seconds on a CI runner (three skins every triangle for every ray), so the limit leaves room for a slow one.
+  }, 120_000);
 
   it("covers every crown: hair (or a cap) down to a hairline above the brow, never a bare scalp", () => {
     for (const [index, look] of residents.entries()) {

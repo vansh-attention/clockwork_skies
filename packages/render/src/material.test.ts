@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { Color, type ShaderMaterial } from "three";
-import { createIllustratedMaterial, illustratedEnvironment, resetIllustratedEnvironment, shadeOf } from "./material";
+import {
+  createDepthPrepassMaterial, createIllustratedMaterial, illustratedEnvironment, resetIllustratedEnvironment, shadeOf, supportsDepthPrepass,
+} from "./material";
 import { createGradeLut, IllustratedComposer } from "./IllustratedComposer";
 
 /** Hue (0..1), saturation and value of a linear colour. */
@@ -94,6 +96,52 @@ describe("world materials", () => {
       const code = source.replace(/\/\*\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
       for (const word of reserved) expect(code, word).not.toMatch(new RegExp(`\\b${word}\\b`));
     }
+  });
+});
+
+describe("cheaper pixels", () => {
+  const scenery = createIllustratedMaterial({ color: "#c7ab7b", lighting: "world", pattern: "brick" });
+  const figure = createIllustratedMaterial({ color: "#ffffff", lighting: "world", vertexColors: true, character: true });
+
+  it("lets scenery be drawn depth-first, but nothing that cuts pixels away or is drawn its own way", () => {
+    expect(supportsDepthPrepass(scenery)).toBe(true);
+    expect(supportsDepthPrepass(createIllustratedMaterial({ color: "#c7ab7b" }))).toBe(true);
+    expect(supportsDepthPrepass(figure)).toBe(false);
+    expect(supportsDepthPrepass(createIllustratedMaterial({ color: "#4d8b62", lighting: "world", seeThrough: true }))).toBe(false);
+    const glassy = createIllustratedMaterial({ color: "#c7ab7b", lighting: "world" });
+    glassy.transparent = true;
+    expect(supportsDepthPrepass(glassy)).toBe(false);
+    // A material whose vertex shader was patched (the authored avatar) would not land on the prepass's depth.
+    const patched = createIllustratedMaterial({ color: "#c7ab7b", lighting: "world" });
+    patched.vertexShader = `in float extra;\n${patched.vertexShader}`;
+    expect(supportsDepthPrepass(patched)).toBe(false);
+  });
+
+  it("draws the prepass with the materials' own vertex shader and no colour, swaying with the same wind", () => {
+    const prepass = createDepthPrepassMaterial();
+    expect(prepass.vertexShader).toBe(scenery.vertexShader);
+    expect(prepass.vertexShader).toContain("invariant gl_Position;");
+    expect(prepass.colorWrite).toBe(false);
+    expect(prepass.uniforms.uTime).toBe(illustratedEnvironment.uTime);
+    expect(prepass.uniforms.uWind).toBe(illustratedEnvironment.uWind);
+    expect((prepass.defaultAttributeValues as Record<string, number[]>).sway).toEqual([0]);
+    prepass.dispose();
+  });
+
+  it("leaves scenery's line breaks to the line pass and keeps characters' on the body", () => {
+    expect(scenery.fragmentShader).toContain("worldBreaks = 1.0;");
+    expect(scenery.fragmentShader).toContain("outInfo = vec4(worldBreaks, encodeNormal(viewNormal), lineMask);");
+    // Only the character branch still breaks lines in the material itself.
+    expect(scenery.fragmentShader.match(/lineMask \*= lineBreak\(/g)).toHaveLength(1);
+    expect(scenery.fragmentShader).toContain("lineMask *= lineBreak(vBindPosition");
+  });
+
+  it("looks up the sun's shadow only on surfaces that face it, with lookups a branch may skip", () => {
+    expect(scenery.fragmentShader).toContain("if (receiveShadow && facing > 0.0) {");
+    // Five taps, each naming its level: no screen-space derivatives, so the branch is a real one.
+    expect(scenery.fragmentShader.match(/textureLod\(shadowMap, /g)).toHaveLength(5);
+    // The first tap of three's disk sits sqrt(0.1) out along x before the per-pixel turn.
+    expect(scenery.fragmentShader).toContain("vec2(0.316227766, 0.000000000)");
   });
 });
 

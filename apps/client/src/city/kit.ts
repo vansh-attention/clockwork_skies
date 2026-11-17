@@ -1,11 +1,12 @@
 import * as THREE from "three";
 import { mergeGeometries, mergeVertices } from "three/addons/utils/BufferGeometryUtils.js";
-import { createIllustratedMaterial, type IllustratedMaterialOptions } from "@clockwork/render";
+import { createIllustratedMaterial, DEPTH_PREPASS_LAYER, supportsDepthPrepass, type IllustratedMaterialOptions } from "@clockwork/render";
 import { polarToXZ } from "./layout";
 
 /**
  * Reusable geometry pieces for floating-island scenes: an illustrated palette, a per-material
- * batch that merges into one draw call each, placement helpers, and a few shared shapes.
+ * batch that merges into one draw call each (in chunks the renderer can cull), placement helpers,
+ * and a few shared shapes.
  */
 
 const TAU = Math.PI * 2;
@@ -159,12 +160,57 @@ export function merge(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return merged;
 }
 
-/** Collects static geometry per material and merges it into one draw call each. */
+/**
+ * The side of a culling chunk, in world units. A material's static geometry is cut into chunks this size on the
+ * ground plane, so the renderer can skip the ones outside the camera (and outside the sun's shadow square, which is
+ * 110 units across on foot). Smaller chunks cull more tightly; larger ones mean fewer pieces to test each frame.
+ */
+export const CHUNK_SIZE = 48;
+/** The chunk every part wider than a chunk goes in (long street ribbons, the ground, the sea): never worth culling. */
+const WIDE_CHUNK = "wide";
+
+/**
+ * Makes a part ready to batch: only the attributes the illustrated material reads, no groups, and an index. Shapes
+ * three builds indexed (boxes, cylinders, spheres) keep their shared vertices, a third fewer than drawing every
+ * triangle's corners separately; a part that had no index gets a plain one, so all parts merge alike.
+ */
+function indexedPart(geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  for (const name of Object.keys(geometry.attributes)) if (name !== "position" && name !== "normal" && name !== "uv") geometry.deleteAttribute(name);
+  geometry.clearGroups();
+  if (!geometry.index) {
+    const count = geometry.getAttribute("position").count;
+    const index = count > 65535 ? new Uint32Array(count) : new Uint16Array(count);
+    for (let i = 0; i < count; i += 1) index[i] = i;
+    geometry.setIndex(new THREE.BufferAttribute(index, 1));
+  }
+  return geometry;
+}
+
+function mergeIndexed(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
+  const merged = parts.length === 1 ? parts[0]!.clone() : mergeGeometries(parts, false);
+  parts.forEach((part) => part.dispose());
+  if (!merged) throw new Error("Could not merge geometry (parts must share position, normal and uv)");
+  return merged;
+}
+
+/** Which chunk a part belongs to: the ground cell under the middle of its bounds, or the wide chunk. */
+function chunkOf(part: THREE.BufferGeometry): string {
+  part.computeBoundingBox();
+  const { min, max } = part.boundingBox!;
+  if (max.x - min.x > CHUNK_SIZE || max.z - min.z > CHUNK_SIZE) return WIDE_CHUNK;
+  return `${Math.floor((min.x + max.x) / 2 / CHUNK_SIZE)},${Math.floor((min.z + max.z) / 2 / CHUNK_SIZE)}`;
+}
+
+/**
+ * Collects static geometry per material and merges it into one mesh each. A material spread over several chunks
+ * becomes a batched mesh: still one object and one (multi-)draw call, but each chunk is culled on its own, against
+ * the camera and against the sun's shadow square.
+ */
 export class Batch<Extra extends string = never> {
   private readonly parts = new Map<MaterialKey<Extra>, THREE.BufferGeometry[]>();
 
   add(key: MaterialKey<Extra>, geometry: THREE.BufferGeometry, matrix?: THREE.Matrix4): void {
-    const part = normalize(geometry);
+    const part = indexedPart(geometry);
     if (matrix) part.applyMatrix4(matrix);
     let list = this.parts.get(key);
     if (!list) { list = []; this.parts.set(key, list); }
@@ -174,14 +220,127 @@ export class Batch<Extra extends string = never> {
   build(palette: MaterialSource<Extra>, parent: THREE.Object3D): THREE.Mesh[] {
     const meshes: THREE.Mesh[] = [];
     for (const [key, list] of this.parts) {
-      const mesh = new THREE.Mesh(merge(list), palette.get(key));
+      const chunks = new Map<string, THREE.BufferGeometry[]>();
+      for (const part of list) {
+        const chunk = chunkOf(part);
+        const group = chunks.get(chunk);
+        if (group) group.push(part);
+        else chunks.set(chunk, [part]);
+      }
+      const material = palette.get(key);
+      const mesh = chunks.size === 1 ? new THREE.Mesh(mergeIndexed(list), material) : batched([...chunks.values()].map(mergeIndexed), material);
       mesh.name = key;
+      // Static scenery is drawn depth-first where the scene's composer has its depth prepass on (see CityScene).
+      if (supportsDepthPrepass(material)) mesh.layers.enable(DEPTH_PREPASS_LAYER);
       parent.add(mesh);
       meshes.push(mesh);
     }
     this.parts.clear();
     return meshes;
   }
+}
+
+/** One batched mesh holding every chunk; the chunk geometries are copied in and released. */
+function batched(chunks: THREE.BufferGeometry[], material: THREE.Material): THREE.BatchedMesh {
+  let vertices = 0;
+  let indices = 0;
+  for (const chunk of chunks) {
+    vertices += chunk.getAttribute("position").count;
+    indices += chunk.index!.count;
+  }
+  const mesh = new THREE.BatchedMesh(chunks.length, vertices, indices, material);
+  // No nearest-first sorting: the depth prepass already keeps hidden chunks from being painted, and sorting every
+  // chunk of every material three times a frame (prepass, painted pass, shadows) costs more script time than it saves.
+  mesh.sortObjects = false;
+  const ids: number[] = [];
+  for (const chunk of chunks) {
+    const id = mesh.addGeometry(chunk);
+    mesh.addInstance(id);
+    ids.push(id);
+    chunk.dispose();
+  }
+  cullChunksLightly(mesh, ids);
+  return mesh;
+}
+
+/** The draw lists three's renderer reads from a batched mesh (three 0.186): which index ranges to draw, and how many. */
+type DrawLists = { _multiDrawStarts: Int32Array; _multiDrawCounts: Int32Array; _multiDrawCount: number };
+const cullFrustum = new THREE.Frustum();
+const cullMatrix = new THREE.Matrix4();
+const cullSphere = new THREE.Sphere();
+
+/**
+ * Culls a batched mesh's chunks with a plain loop over spheres worked out once, in place of three's own per-frame
+ * pass. three's is written for instances that move: for every chunk, every pass (prepass, painted pass, shadows) it
+ * reads the instance's matrix back, transforms its bounds and rewrites a look-up texture, which for a town's worth of
+ * chunks standing still cost a couple of milliseconds of script a frame. The chunks drawn are the same ones.
+ * If a later three keeps its draw lists elsewhere, this leaves three's own culling in charge.
+ */
+function cullChunksLightly(mesh: THREE.BatchedMesh, ids: readonly number[]): void {
+  const probe = mesh as unknown as Partial<DrawLists>;
+  const index = mesh.geometry.index;
+  if (!index || !(probe._multiDrawStarts instanceof Int32Array) || !(probe._multiDrawCounts instanceof Int32Array) || typeof probe._multiDrawCount !== "number") return;
+  const count = ids.length;
+  const starts = new Int32Array(count);
+  const counts = new Int32Array(count);
+  const spheres = new Float32Array(count * 4);
+  ids.forEach((id, i) => {
+    const range = mesh.getGeometryRangeAt(id);
+    if (!range) throw new Error("A batched chunk has no draw range");
+    // Indexed multi-draws start at a byte offset into the index buffer.
+    starts[i] = range.start * index.array.BYTES_PER_ELEMENT;
+    counts[i] = range.count;
+    mesh.getBoundingSphereAt(id, cullSphere);
+    spheres.set([cullSphere.center.x, cullSphere.center.y, cullSphere.center.z, cullSphere.radius], i * 4);
+  });
+  const threes = mesh.onBeforeRender;
+  let primed = false;
+  mesh.onBeforeRender = function onBeforeRender(renderer, scene, camera, geometry, material, group) {
+    // The first pass is three's own: it readies the batch's look-up texture, which three's shadow shader reads (every
+    // chunk sits where it was built, so what the texture holds afterwards never matters, only that it exists).
+    // Wireframes double the draw ranges; three's own pass knows how.
+    if (!primed || (material as THREE.Material & { wireframe?: boolean }).wireframe) {
+      primed = true;
+      threes.call(mesh, renderer, scene, camera, geometry, material, group);
+      return;
+    }
+    const lists = mesh as unknown as DrawLists;
+    cullMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(mesh.matrixWorld);
+    cullFrustum.setFromProjectionMatrix(cullMatrix, camera.coordinateSystem, (camera as THREE.Camera & { reversedDepth?: boolean }).reversedDepth ?? false);
+    const planes = cullFrustum.planes;
+    let drawn = 0;
+    for (let i = 0; i < count; i += 1) {
+      const x = spheres[i * 4]!, y = spheres[i * 4 + 1]!, z = spheres[i * 4 + 2]!, outside = -spheres[i * 4 + 3]!;
+      let visible = true;
+      for (let p = 0; p < 6; p += 1) {
+        const plane = planes[p]!;
+        if (plane.normal.x * x + plane.normal.y * y + plane.normal.z * z + plane.constant < outside) { visible = false; break; }
+      }
+      if (!visible) continue;
+      lists._multiDrawStarts[drawn] = starts[i]!;
+      lists._multiDrawCounts[drawn] = counts[i]!;
+      drawn += 1;
+    }
+    lists._multiDrawCount = drawn;
+  };
+}
+
+/** Batched meshes already released: three's own dispose throws when called a second time. */
+const releasedBatches = new WeakSet<THREE.BatchedMesh>();
+
+/**
+ * Release a mesh's GPU resources: a batched mesh also owns the small textures that place its chunks. Safe to call
+ * again on the same mesh (a scene torn down twice, or two scenes sharing one built town in a test).
+ */
+export function disposeMesh(mesh: THREE.Mesh): void {
+  if (mesh instanceof THREE.BatchedMesh) {
+    if (releasedBatches.has(mesh)) return;
+    releasedBatches.add(mesh);
+    mesh.dispose();
+    return;
+  }
+  if (mesh instanceof THREE.InstancedMesh) mesh.dispose();
+  mesh.geometry.dispose();
 }
 
 export type Scale = readonly [number, number, number];

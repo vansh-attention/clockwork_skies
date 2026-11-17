@@ -7,7 +7,7 @@ import { createCityLayout, districtAt } from "./layout";
 import { CourierController, type CourierHud, type CourierMotion } from "../courier/CourierController";
 import { buildLanternfall, buildLaunchersAndGates } from "../courier/outpost";
 import type { Spinner } from "./buildCity";
-import { enableShadows } from "./kit";
+import { disposeMesh, enableShadows } from "./kit";
 import { Sun } from "./sun";
 import { SKY_COLORS, Sky } from "./sky";
 import { ATMOSPHERE_RATE, blendLook, FOG_NEAR, GROUND_LIGHT, INK, londonGrade, SKY_LIGHT } from "./atmosphere";
@@ -15,6 +15,8 @@ import { buildAmbient, type BuiltAmbient } from "./ambient";
 import { createHillTownWalkWorld } from "../courier/walkWorld";
 import { buildResidents, type BuiltResidents } from "./residents";
 import { buildAnimals, type BuiltAnimals } from "./animals";
+import { GpuTimer } from "./gpuTimer";
+import { ResolutionGovernor } from "./resolution";
 
 export type CityMode = "title" | "explore" | "play";
 export type Nudge = "left" | "right" | "up" | "down" | "in" | "out";
@@ -23,6 +25,8 @@ export type CityDiagnostics = {
   mode: CityMode; focused: number | null; calls: number; triangles: number; camera: number[]; target: number[]; courier: CourierDiagnostics | null;
   population: number;
   animals?: number;
+  /** GPU time of the latest measured frame in milliseconds, where the browser can report it. */
+  gpuMs?: number | null;
   /** Names of the scene's top-level parts (town, Lanternfall, launchers and gates, courier...), so tests can see what is drawn. */
   parts: string[];
 };
@@ -96,7 +100,8 @@ export class CityScene {
   private reducedMotion = false;
   private frame = 0;
   private pixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
-  private fpsSamples: number[] = [];
+  /** Lowers the drawing resolution when the graphics card is over its budget, and raises it again (resolution.ts). */
+  private readonly governor = new ResolutionGovernor(this.pixelRatio, { floor: Math.min(0.65, this.pixelRatio), ceiling: this.pixelRatio });
   private minuteShown = -1;
   /** View offset as a fraction of the screen; eased toward its target. */
   private shift = { x: TITLE_SHIFT, y: 0 };
@@ -112,6 +117,7 @@ export class CityScene {
   private readonly gradeLut = createGradeLut(londonGrade);
   /** 0 = the town look, 1 = the street look; eased toward the camera's situation (see atmosphere.ts). */
   private streetLook = 0;
+  private readonly gpuTimer: GpuTimer;
 
   constructor(private readonly container: HTMLElement, private readonly options: CitySceneOptions) {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
@@ -130,10 +136,15 @@ export class CityScene {
       canvas.tabIndex = 0;
       container.appendChild(canvas);
       this.composer = new IllustratedComposer(this.renderer);
+      this.gpuTimer = new GpuTimer(this.renderer.getContext() as WebGL2RenderingContext);
       // Drawn lines in a dark slate ink, and the whole image regraded through the London table.
       this.composer.setStyle(LINE_STYLE);
       this.composer.setInk(new THREE.Color(INK));
       this.composer.setGradeLut(this.gradeLut);
+      // Buildings stand behind buildings: lay the scenery's depth down first, so each pixel is painted once.
+      this.composer.setDepthPrepass(true);
+      // And smooth the stair-steps off slanted lines and roof edges as the last step.
+      this.composer.setSmoothing(true);
       this.applyLook();
       // The painted dome is the sky; the far fog matches its horizon so distant islands melt into it.
       this.world.add(this.sky.dome);
@@ -199,6 +210,8 @@ export class CityScene {
     const previousFocus = this.focused;
     const leavingPlay = previous === "play";
     this.mode = mode;
+    // A new view loads and compiles new things: the resolution control starts measuring afresh.
+    this.governor?.reset();
     this.focused = null;
     if (mode === "play") {
       try {
@@ -331,6 +344,7 @@ export class CityScene {
     return { mode: this.mode, focused: this.focused, calls: this.stats.calls, triangles: this.stats.triangles,
       population: this.residents.agents.length,
       animals: this.animals?.agents.length ?? 0,
+      gpuMs: this.gpuTimer?.latest ?? null,
       camera: this.camera.position.toArray(), target: this.controls.target.toArray(), courier: this.courierDiagnostics(),
       parts: this.world.children.map((child) => child.name).filter((name) => name.length > 0) };
   }
@@ -501,7 +515,9 @@ export class CityScene {
     // Stable ink while walking: the deliberate eight-frame line boil otherwise looks like motion judder.
     this.composer.setStyle({ boil: this.mode === "play" ? 0 : LINE_STYLE.boil });
     this.easeLook(dt);
+    this.gpuTimer.begin();
     this.composer.render(this.world, this.camera, [{ scene: this.sky.overlay, camera: this.camera }]);
+    this.gpuTimer.end();
     this.stats = { calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles };
     this.adaptResolution(rawDt);
   };
@@ -542,14 +558,14 @@ export class CityScene {
     }
   }
 
+  /** Follow the graphics card's real load (or, failing that, the frame rate): softer when over budget, sharp when not. */
   private adaptResolution(dt: number) {
-    this.fpsSamples.push(dt > 0 ? 1 / dt : 60);
-    if (this.fpsSamples.length < 120) return;
-    const average = this.fpsSamples.reduce((sum, value) => sum + value, 0) / this.fpsSamples.length;
-    this.fpsSamples.length = 0;
-    const ceiling = Math.min(window.devicePixelRatio || 1, 1.5);
-    const next = average < 42 ? Math.max(0.65, this.pixelRatio - 0.1) : average > 57 ? Math.min(ceiling, this.pixelRatio + 0.05) : this.pixelRatio;
-    if (next !== this.pixelRatio) { this.pixelRatio = next; this.renderer.setPixelRatio(next); this.resize(); }
+    this.governor.setCeiling(Math.min(window.devicePixelRatio || 1, 1.5));
+    const next = this.governor.frame(dt, this.gpuTimer.latest);
+    if (next === null) return;
+    this.pixelRatio = next;
+    this.renderer.setPixelRatio(next);
+    this.resize();
   }
 
   private resize = () => {
@@ -564,7 +580,11 @@ export class CityScene {
     this.applyShift();
   };
 
-  private onVisibility = () => { if (document.hidden) this.clock.stop(); else this.clock.start(); };
+  private onVisibility = () => {
+    if (document.hidden) this.clock.stop(); else this.clock.start();
+    // Frames around a hidden spell say nothing about the load.
+    this.governor.reset();
+  };
 
   private onContextLost = (event: Event) => {
     event.preventDefault();
@@ -588,9 +608,8 @@ export class CityScene {
     this.controls.dispose();
     const materials = new Set<THREE.Material>();
     this.world.traverse((object) => {
-      if (object instanceof THREE.InstancedMesh) object.dispose();
       if (!(object instanceof THREE.Mesh)) return;
-      object.geometry.dispose();
+      disposeMesh(object);
       for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
     });
     materials.forEach((material) => material.dispose());
@@ -600,6 +619,7 @@ export class CityScene {
     this.residents.dispose();
     this.animals?.dispose();
     this.composer.dispose();
+    this.gpuTimer?.dispose();
     this.gradeLut.dispose();
     this.renderer.dispose();
     canvas.remove();
